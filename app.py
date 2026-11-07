@@ -379,7 +379,7 @@ with tab_radar:
                 stores_tuple=selected_stores_param,
                 niche=niche_param,
                 min_discount=viral_discount,
-                price_max=1000 if is_viral_mode else price_limit,
+                price_max=10000 if is_viral_mode else price_limit,
                 keyword=search_term_param,
                 viral_mode=is_viral_mode,
                 viral_cat=actual_cat_param
@@ -486,7 +486,7 @@ with tab_radar:
                                 b_html += f'<span class="badge-store">{store_name}</span>'
                                 if is_viral:
                                     b_html += '<span class="badge-viral">✨ VIRAL</span>'
-                                elif disc and disc > 0:
+                                if disc and disc > 0:
                                     b_html += f'<span class="badge-discount">-{disc}%</span>'
                                 b_html += '</div>'
                                 st.markdown(b_html, unsafe_allow_html=True)
@@ -517,10 +517,18 @@ with tab_radar:
                             p_str = f"R$ {p_val:,.2f}".replace(',', 'v').replace('.', ',').replace('v', '.') if p_val else deal.get("price_str", "Confira")
                             op_str = f"R$ {op_val:,.2f}".replace(',', 'v').replace('.', ',').replace('v', '.') if (op_val and op_val > p_val) else ""
                             
+                            social_proof_html = ""
+                            if is_viral:
+                                social_proof_html = '<div style="color: #64748B; font-size: 0.74rem; margin-top: 3px; font-weight: 600;">🔥 +1mil Vendidos • ⚡ Alta Procura</div>'
+                            
                             pricing_html = f'''
                             <div class="product-pricing">
                                 {f'<span class="price-old">{op_str}</span>' if op_str else ''}
-                                <span class="price-promo">{p_str}</span>
+                                <div style="display: flex; align-items: baseline; gap: 6px;">
+                                    <span class="price-promo">{p_str}</span>
+                                    <span style="font-size: 0.75rem; color: #10B981; font-weight: 700;">no Pix</span>
+                                </div>
+                                {social_proof_html}
                                 {f'<span class="coupon-tag">🎟️ Cupom: {deal.get("coupon")}</span>' if deal.get("coupon") else ''}
                             </div>
                             '''
