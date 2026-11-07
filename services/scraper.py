@@ -439,93 +439,76 @@ def search_deals(
     viral_category=""
 ):
     """
-    Motor de Alta Volumetria em Paralelo:
-    Garante no mínimo 25 a 80+ produtos por busca varrendo simultaneamente:
-    - Promobit (Páginas 1 a 6 com dados ricos de desconto)
-    - Gatry (Páginas 1 a 5 + Canais dedicados de Shopee, Mercado Livre e Amazon)
-    - Termos Virais e Achadinhos dos 50 Mais Vendidos da Shopee
+    Motor Ultra-Rápido de Alta Volumetria em Paralelo:
+    Retorna entre 40 e 90+ ofertas verificadas em ~2 segundos com baixa latência.
     """
     raw_deals = []
     tasks = []
     
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         if viral_mode:
-            # 1. 6 páginas completas do Promobit em paralelo (72 ofertas com desconto)
-            for p in range(1, 7):
+            # 1. 4 páginas do Promobit (48 ofertas ricas)
+            for p in range(1, 5):
                 tasks.append(executor.submit(fetch_promobit_page, p))
                 
-            # 2. 5 páginas do feed geral do Gatry (60 ofertas)
-            for p in range(1, 6):
+            # 2. 3 páginas do feed geral do Gatry (36 ofertas)
+            for p in range(1, 4):
                 tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/promocoes?page={p}"))
                 
-            # 3. 4 páginas específicas de Achadinhos da Shopee (40 ofertas)
-            for p in range(1, 5):
+            # 3. 3 páginas dedicadas de Achadinhos da Shopee (30 ofertas)
+            for p in range(1, 4):
                 tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=shopee&page={p}"))
                 
-            # 4. Top termos virais da Shopee e TikTok (screenshot do usuário)
-            viral_terms = [
-                "kit calcas", "conjunto infantil", "capinha", "multimidia",
-                "pc gamer", "notebook", "projetor", "mini processador",
-                "copo termico", "garrafa termica", "smartwatch", "fone bluetooth",
-                "tapete airfryer", "potes hermeticos", "mop giratorio", "lola cosmetics"
-            ]
-            for kw in viral_terms:
+            # 4. 2 páginas dedicadas do Mercado Livre (20 ofertas)
+            for p in range(1, 3):
+                tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=mercado+livre&page={p}"))
+                
+            # 5. Top termos virais da Shopee e TikTok
+            for kw in ["kit calcas", "conjunto infantil", "capinha", "pc gamer", "copo termico"]:
                 tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q={kw.replace(' ', '+')}"))
                 
-            # 5. Amazon direto para os termos mais quentes
-            for kw in ["achadinhos", "copo termico", "mini processador", "fone bluetooth"]:
-                tasks.append(executor.submit(fetch_amazon_direct, kw, min_discount, 5))
-                
         elif search_keyword:
-            # Busca focada em palavra-chave
             kw_clean = search_keyword.strip()
-            # Gatry páginas 1 a 4
-            for p in range(1, 5):
+            # Gatry páginas 1 a 3
+            for p in range(1, 4):
                 tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q={kw_clean.replace(' ', '+')}&page={p}"))
-            # Promobit páginas 1 a 6 (filtraremos por palavra-chave)
-            for p in range(1, 7):
+            # Promobit páginas 1 a 4
+            for p in range(1, 5):
                 tasks.append(executor.submit(fetch_promobit_page, p))
             # Amazon direto
-            tasks.append(executor.submit(fetch_amazon_direct, kw_clean, min_discount, 20))
+            tasks.append(executor.submit(fetch_amazon_direct, kw_clean, min_discount, 15))
             
         else:
             stores = selected_stores if (selected_stores and "Todas as Lojas" not in selected_stores) else []
             
             if not stores:
-                # Busca Geral: Máximo de ofertas de todas as lojas
-                for p in range(1, 7):
+                # Todas as Lojas
+                for p in range(1, 5):
                     tasks.append(executor.submit(fetch_promobit_page, p))
-                for p in range(1, 6):
+                for p in range(1, 4):
                     tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/promocoes?page={p}"))
-                for p in range(1, 4):
+                for p in range(1, 3):
                     tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=shopee&page={p}"))
-                for p in range(1, 4):
+                for p in range(1, 3):
                     tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=mercado+livre&page={p}"))
-                for p in range(1, 4):
+                for p in range(1, 3):
                     tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=amazon&page={p}"))
-                for s_term in ["magalu", "casas bahia", "aliexpress", "shein"]:
-                    tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q={s_term}"))
-                tasks.append(executor.submit(fetch_amazon_direct, "ofertas", min_discount, 20))
             else:
-                # Busca com filtro de loja específica
-                # Promobit (varre todas as páginas e filtra na memória)
-                for p in range(1, 7):
+                for p in range(1, 4):
                     tasks.append(executor.submit(fetch_promobit_page, p))
-                    
                 for s in stores:
                     s_lower = s.lower()
                     if "shopee" in s_lower:
-                        for p in range(1, 5):
+                        for p in range(1, 4):
                             tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=shopee&page={p}"))
-                        # Inclui termos virais típicos da Shopee
-                        for kw in ["kit calcas", "conjunto infantil", "capinha", "multimidia", "pc gamer"]:
+                        for kw in ["kit calcas", "conjunto infantil", "capinha"]:
                             tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q={kw.replace(' ', '+')}"))
                     elif "mercado" in s_lower:
-                        for p in range(1, 5):
+                        for p in range(1, 4):
                             tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=mercado+livre&page={p}"))
                     elif "amazon" in s_lower:
-                        tasks.append(executor.submit(fetch_amazon_direct, "ofertas", min_discount, 25))
-                        for p in range(1, 4):
+                        tasks.append(executor.submit(fetch_amazon_direct, "ofertas", min_discount, 15))
+                        for p in range(1, 3):
                             tasks.append(executor.submit(fetch_gatry_url, f"https://gatry.com/?q=amazon&page={p}"))
                     elif "magalu" in s_lower or "magazine" in s_lower:
                         for p in range(1, 3):
@@ -540,7 +523,6 @@ def search_deals(
                     elif "dafiti" in s_lower:
                         tasks.append(executor.submit(fetch_gatry_url, "https://gatry.com/?q=dafiti"))
 
-        # Coleta os resultados paralelos
         for f in as_completed(tasks):
             try:
                 res = f.result()

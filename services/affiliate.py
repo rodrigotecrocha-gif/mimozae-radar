@@ -54,13 +54,13 @@ def resolve_unshorten_url(url: str, max_depth: int = 3) -> str:
 
 
 @lru_cache(maxsize=2048)
-def clean_product_url(url: str) -> str:
+def clean_product_url(url: str, resolve_redirects: bool = False) -> str:
     """Limpa tags de terceiros, subids e parâmetros de tracking para manter a URL limpa do produto."""
     if not url:
         return ""
         
-    # Resolver se for shortlink
-    final_url = resolve_unshorten_url(url)
+    # Resolver se for shortlink apenas quando explicitamente solicitado (ex: aba de link único)
+    final_url = resolve_unshorten_url(url) if resolve_redirects else url
     
     # 1. Amazon: Extrair /dp/ASIN limpo
     if "amazon.com" in final_url:

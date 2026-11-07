@@ -371,8 +371,16 @@ with tab_radar:
                 
             actual_cat_param = ""
             
-    # Execução Paralela Rápida
-    if btn_search:
+    # Execução Paralela Rápida com Auto-Load Inteligente
+    current_kw = search_term_param.strip() if not is_viral_mode else ""
+    kw_changed = bool(current_kw and current_kw != st.session_state.get("last_kw", ""))
+    
+    # Auto-carregamento imediato no primeiro acesso para nunca mostrar tela vazia
+    should_search = btn_search or kw_changed or (len(st.session_state.deals_list) == 0)
+    
+    if should_search:
+        if kw_changed:
+            st.session_state.last_kw = current_kw
         t_start = time.time()
         with st.spinner("⚡ Varrendo lojas simultaneamente em paralelo..."):
             found = get_cached_deals(
@@ -380,7 +388,7 @@ with tab_radar:
                 niche=niche_param,
                 min_discount=viral_discount,
                 price_max=10000 if is_viral_mode else price_limit,
-                keyword=search_term_param,
+                keyword=current_kw,
                 viral_mode=is_viral_mode,
                 viral_cat=actual_cat_param
             )
