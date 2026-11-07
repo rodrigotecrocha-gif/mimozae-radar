@@ -1,0 +1,53 @@
+{
+    "active_profile": "Rodrigo",
+    "profiles": {
+        "Rodrigo": {
+            "instagram": {
+                "handle": "@mimozae.of",
+                "default_cta": "Comente 'EU QUERO' para receber o link com desconto no Direct!",
+                "hashtags": "#achadinhos #promocao #desconto #ofertas #mimozae #comprinhas #blackfriday #achados"
+            },
+            "whatsapp": {
+                "group_link": "",
+                "webhook_url": "",
+                "auto_send_enabled": false
+            },
+            "affiliate_tags": {
+                "amazon": "",
+                "mercadolivre": "",
+                "shopee": "",
+                "magalu": "",
+                "casasbahia": "",
+                "shein": "",
+                "aliexpress": "",
+                "dafiti": ""
+            }
+        },
+        "Parceira": {
+            "instagram": {
+                "handle": "@mimozae.of",
+                "default_cta": "Comente 'EU QUERO' para receber o link com desconto no Direct!",
+                "hashtags": "#achadinhos #promocao #desconto #ofertas #mimozae #comprinhas #blackfriday #achados"
+            },
+            "whatsapp": {
+                "group_link": "",
+                "api_endpoint": "",
+                "api_token": "",
+                "target_group": "",
+                "mode": "web",
+                "api_type": "evolution",
+                "webhook_url": ""
+            },
+            "affiliate_tags": {
+                "amazon": "",
+                "mercadolivre": "",
+                "shopee": "",
+                "magalu": "",
+                "casasbahia": "",
+                "shein": "",
+                "aliexpress": "",
+                "dafiti": ""
+            }
+        }
+    }
+}
