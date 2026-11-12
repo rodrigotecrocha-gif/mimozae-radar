@@ -89,14 +89,17 @@ def generate_batch_super_message(deals: list, config: dict) -> str:
     handle = config.get("instagram", {}).get("handle", "@mimozae.of")
     group_link = config.get("whatsapp", {}).get("group_link", "")
     
+    count = min(len(deals), 10)
     lines = [
-        "🔥 *TOP 5 ACHADINHOS IMPERDÍVEIS DO DIA!* 🔥",
-        f"⚡ _Promoções selecionadas para você ({handle})_",
+        f"🔥 *TOP {count} ACHADINHOS IMPERDÍVEIS DO DIA!* 🔥",
+        f"⚡ _Promoções selecionadas a dedo para você ({handle})_",
         "━━━━━━━━━━━━━━━━━━━━━━━",
         ""
     ]
     
-    for idx, d in enumerate(deals[:5], start=1):
+    num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    for idx, d in enumerate(deals[:10]):
         title = d.get("title", "").strip()
         price = d.get("price_str") or f"R$ {d.get('price', 0):.2f}".replace('.', ',')
         old_price = d.get("old_price_str") or ""
@@ -108,7 +111,8 @@ def generate_batch_super_message(deals: list, config: dict) -> str:
         link = aff_res["url"]
         
         disc_txt = f" (-{disc}% OFF)" if disc else ""
-        lines.append(f"*{idx}️⃣ {title}*")
+        num_icon = num_emojis[idx] if idx < len(num_emojis) else f"*{idx+1}.*"
+        lines.append(f"{num_icon} *{title}*")
         if old_price and old_price != price:
             lines.append(f"❌ De: ~{old_price}~ 👉 *Por: {price}*{disc_txt}")
         else:
@@ -117,12 +121,12 @@ def generate_batch_super_message(deals: list, config: dict) -> str:
         lines.append(f"🏬 Loja: {store}")
         if coupon:
             lines.append(f"🎟️ Cupom: *{coupon}*")
-        lines.append(f"🛒 *Link:* {link}")
+        lines.append(f"🛒 *Link Seguro:* {link}")
         lines.append("")
         
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append("⚠️ _Atenção: Os preços e estoques podem esgotar rapidamente!_")
     if group_link:
-        lines.append(f"👥 _Grupo VIP:_ {group_link}")
+        lines.append(f"👥 _Entre no nosso Grupo VIP de Achadinhos:_ {group_link}")
         
     return "\n".join(lines)

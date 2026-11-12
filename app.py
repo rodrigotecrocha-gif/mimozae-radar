@@ -409,55 +409,65 @@ with tab_radar:
         st.success(f"✨ Encontradas **{len(deals)}** promoções no radar! {speed_msg}")
         
         # ========================================================
-        # BARRA DE DISPARO EM LOTE (ATÉ 5 LINKS DE UMA VEZ)
+        # BARRA DE DISPARO EM LOTE (ATÉ 10 OFERTAS COM 1 CLIQUE)
         # ========================================================
-        selected_deals = [deals[i] for i in sorted(list(st.session_state.selected_indices)) if i < len(deals)][:5]
+        selected_deals = [deals[i] for i in sorted(list(st.session_state.selected_indices)) if i < len(deals)][:10]
         
         with st.container(border=True):
-            b_col1, b_col2, b_col3, b_col4 = st.columns([1.5, 1.8, 1.8, 1])
-            with b_col1:
-                st.markdown(f"#### 📦 Fila de Envio: **{len(selected_deals)}/5**")
-                st.caption("Marque a caixa no topo dos cards para adicionar.")
-                
-            with b_col2:
-                # Disparo Direto no WhatsApp Web (Super Mensagem 5 em 1)
+            st.markdown(f"#### ⚡ Central de Disparo em Lote • Fila: **{len(selected_deals)}/10** ofertas selecionadas")
+            
+            # Botões de Seleção Instantânea (Zero Delay / 1 Clique)
+            q_col1, q_col2, q_col3, q_col4 = st.columns([1.5, 1.5, 2.0, 1.2])
+            with q_col1:
+                if st.button("⚡ Selecionar Top 5 Virais", use_container_width=True, help="Seleciona automaticamente os 5 produtos com maior procura"):
+                    st.session_state.selected_indices = set(range(min(5, len(deals))))
+                    st.rerun()
+            with q_col2:
+                if st.button("🔥 Selecionar Top 10 Melhores", use_container_width=True, help="Seleciona os 10 melhores achadinhos em 1 clique"):
+                    st.session_state.selected_indices = set(range(min(10, len(deals))))
+                    st.rerun()
+            with q_col3:
+                # Disparo Direto no WhatsApp Web (Super Mensagem 10 em 1)
                 super_msg_text = generate_batch_super_message(selected_deals, config) if selected_deals else ""
-                # Usa modo 'web' para ir direto ao web.whatsapp.com sem tela intermediária!
                 super_wa_link = generate_wa_link(super_msg_text, target_mode=wa_mode) if selected_deals else ""
-                st.link_button("📲 Abrir Super Mensagem (5 em 1)", super_wa_link, disabled=(len(selected_deals) == 0), type="primary", use_container_width=True)
-                
-            with b_col3:
-                # Disparo via API Automática (Foto + Legenda em segundo plano)
-                btn_auto_api = st.button("🚀 Disparar via WhatsApp API", disabled=(len(selected_deals) == 0), use_container_width=True)
-                
-            with b_col4:
+                st.link_button(f"📲 Abrir Super Mensagem ({len(selected_deals)} em 1)", super_wa_link, disabled=(len(selected_deals) == 0), type="primary", use_container_width=True)
+            with q_col4:
                 if st.button("🧹 Limpar Fila", use_container_width=True):
                     st.session_state.selected_indices = set()
                     st.rerun()
                     
             if selected_deals:
-                with st.expander("📋 Ver Texto da Super Mensagem (5 em 1)"):
-                    st.text_area("Texto pronto para colar:", super_msg_text, height=180)
+                with st.expander(f"📋 Ver Texto Pronto da Super Mensagem ({len(selected_deals)} Achadinhos)"):
+                    st.code(super_msg_text, language="")
                     
-            if btn_auto_api and selected_deals:
-                endpoint = config.get("whatsapp", {}).get("api_endpoint") or config.get("whatsapp", {}).get("webhook_url")
-                if not endpoint:
-                    st.error("⚠️ Você ainda não configurou o Endpoint da WhatsApp API na aba 'Configurações & Afiliados'. Preencha a URL da sua Evolution API ou Z-API.")
-                else:
-                    progress_bar = st.progress(0)
-                    success_count = 0
-                    for s_idx, d in enumerate(selected_deals):
-                        aff = convert_to_affiliate(d.get("url", ""), d.get("store", ""), config)
-                        caption = generate_whatsapp_copy(d, aff["url"], config.get("whatsapp", {}).get("group_link", ""))
-                        img_url = d.get("image", "")
-                        
-                        res = send_whatsapp_media_api(config, image_url=img_url, caption=caption)
-                        if res.get("success"):
-                            success_count += 1
-                        time.sleep(1)
-                        progress_bar.progress((s_idx + 1) / len(selected_deals))
-                        
-                    st.success(f"🎉 **{success_count} de {len(selected_deals)}** ofertas disparadas com foto e legenda para o grupo!")
+                b_api_col1, b_api_col2 = st.columns([2.5, 1.5])
+                with b_api_col1:
+                    st.caption("🤖 **Disparo 100% Automático via API:** Envia cada oferta individualmente com foto + legenda em segundo plano com intervalo anti-ban de 2s direto para o grupo do WhatsApp.")
+                with b_api_col2:
+                    btn_auto_api = st.button("🚀 Disparar Fila via WhatsApp API", type="secondary", use_container_width=True)
+                    
+                if btn_auto_api:
+                    endpoint = config.get("whatsapp", {}).get("api_endpoint") or config.get("whatsapp", {}).get("webhook_url")
+                    if not endpoint:
+                        st.error("⚠️ Você ainda não configurou o Endpoint da WhatsApp API na aba '⚙️ Configurações & Afiliados'. Preencha a URL da sua Evolution API ou Z-API.")
+                    else:
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        success_count = 0
+                        for s_idx, d in enumerate(selected_deals):
+                            status_text.text(f"Enviando oferta {s_idx+1} de {len(selected_deals)}: {d.get('title')[:30]}...")
+                            aff = convert_to_affiliate(d.get("url", ""), d.get("store", ""), config)
+                            caption = generate_whatsapp_copy(d, aff["url"], config.get("whatsapp", {}).get("group_link", ""))
+                            img_url = d.get("image", "")
+                            
+                            res = send_whatsapp_media_api(config, image_url=img_url, caption=caption)
+                            if res.get("success"):
+                                success_count += 1
+                            time.sleep(2)
+                            progress_bar.progress((s_idx + 1) / len(selected_deals))
+                            
+                        status_text.empty()
+                        st.success(f"🎉 **{success_count} de {len(selected_deals)}** ofertas disparadas com foto e legenda para o grupo com sucesso!")
 
         # Grid de Cards (Renderização Leve e Instantânea)
         cols_per_row = 3
@@ -477,13 +487,13 @@ with tab_radar:
                             col_chk, col_badges = st.columns([1.3, 1.7])
                             with col_chk:
                                 currently_selected = idx in st.session_state.selected_indices
-                                is_checked = st.checkbox("Fila (5 máx)", value=currently_selected, key=f"chk_{idx}")
+                                is_checked = st.checkbox("Fila (10 máx)", value=currently_selected, key=f"chk_{idx}")
                                 if is_checked != currently_selected:
                                     if is_checked:
-                                        if len(st.session_state.selected_indices) < 5:
+                                        if len(st.session_state.selected_indices) < 10:
                                             st.session_state.selected_indices.add(idx)
                                         else:
-                                            st.toast("⚠️ Limite de 5 ofertas por lote atingido!")
+                                            st.toast("⚠️ Limite de 10 ofertas por lote atingido!")
                                             st.session_state[f"chk_{idx}"] = False
                                     else:
                                         st.session_state.selected_indices.discard(idx)
