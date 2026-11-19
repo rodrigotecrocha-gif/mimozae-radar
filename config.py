@@ -22,6 +22,8 @@ DEFAULT_PROFILE_DATA = {
         "amazon": "",
         "mercadolivre": "",
         "shopee": "",
+        "shopee_app_id": "",
+        "shopee_app_secret": "",
         "magalu": "",
         "casasbahia": "",
         "shein": "",

@@ -72,13 +72,11 @@ def clean_product_url(url: str, resolve_redirects: bool = False) -> str:
         clean = clean.replace("?&", "?").rstrip("?&")
         return clean
         
-    # 2. Mercado Livre: Extrair /p/MLB... ou /MLB-...
+    # 2. Mercado Livre: Extrair /p/MLB..., /MLB-..., ou /up/MLBU... sem lixo de fragmento
     if "mercadolivre.com" in final_url:
-        # Se tiver /p/MLBxxxx ou /MLB-xxxx
-        m = re.search(r'(https://www\.mercadolivre\.com\.br/[^?#]+(?:/p/MLB\d+|MLB-\d+-[^?#]+))', final_url)
+        m = re.search(r'(https://(?:www|produto)\.mercadolivre\.com\.br/[^?#]+(?:/p/MLB\d+|/up/MLBU\d+|MLB-\d+-[^?#]+))', final_url)
         if m:
             return m.group(1)
-        # Limpar parâmetros de terceiros
         clean = re.sub(r'([?&])(?:matt_tool|matt_word|forceInApp|ref)=[^&]*', '', final_url)
         clean = clean.replace("?&", "?").rstrip("?&")
         return clean.split('#')[0]
@@ -105,6 +103,15 @@ def convert_to_affiliate(url: str, store_name: str, config: dict) -> dict:
     """
     Converte qualquer URL em link de afiliado oficial do usuário ou link limpo direto.
     """
+    if url and "s.shopee.com.br/" in url and config.get("affiliate_tags", {}).get("shopee_app_id"):
+        return {
+            "url": url,
+            "clean_url": url,
+            "is_tagged": True,
+            "store": "Shopee",
+            "status": "Link Oficial Shopee API Afiliados"
+        }
+
     clean_url = clean_product_url(url)
     detected_store = identify_store(clean_url if clean_url else url)
     final_store = detected_store if detected_store != "Loja Parceira" else store_name

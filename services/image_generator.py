@@ -1,7 +1,22 @@
+from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 import io
 import requests
 import textwrap
+
+
+@lru_cache(maxsize=64)
+def _fetch_image_bytes(image_url: str):
+    """Baixa e mantém em cache os bytes da imagem remota para não travar reruns."""
+    if not image_url:
+        return None
+    try:
+        resp = requests.get(image_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
+        if resp.status_code == 200 and resp.content:
+            return resp.content
+    except Exception as e:
+        print("Erro ao carregar imagem para o post:", e)
+    return None
 
 THEMES = {
     "Rosa Mimozae": {
@@ -108,12 +123,12 @@ def generate_social_image(
     if uploaded_image:
         prod_img = uploaded_image.convert("RGBA")
     elif image_url:
-        try:
-            resp = requests.get(image_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
-            if resp.status_code == 200:
-                prod_img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
-        except Exception as e:
-            print("Erro ao carregar imagem para o post:", e)
+        img_bytes = _fetch_image_bytes(image_url)
+        if img_bytes:
+            try:
+                prod_img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+            except Exception as e:
+                print("Erro ao decodificar imagem para o post:", e)
             
     # Draw product image box
     img_box_size = 460 if format_type == "feed" else 620

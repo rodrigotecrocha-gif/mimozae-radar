@@ -145,6 +145,24 @@ st.markdown("""
         font-size: 0.75rem;
         display: inline-block;
     }
+    .badge-flash {
+        background-color: #F59E0B;
+        color: #111827 !important;
+        font-weight: 800;
+        padding: 3px 8px;
+        border-radius: 9999px;
+        font-size: 0.72rem;
+        display: inline-block;
+    }
+    .badge-best {
+        background-color: #0EA5E9;
+        color: white !important;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 9999px;
+        font-size: 0.72rem;
+        display: inline-block;
+    }
     .badge-store {
         background-color: #1E293B;
         color: #F8FAFC !important;
@@ -229,8 +247,20 @@ config = get_profile(st.session_state.active_profile_name)
 wa_mode = config.get("whatsapp", {}).get("mode", "web") # 'web', 'app' or 'universal'
 
 # Caching de Alto Desempenho
-@st.cache_data(ttl=180, show_spinner=False)
-def get_cached_deals(stores_tuple, niche, min_discount, price_max, keyword, viral_mode, viral_cat):
+@st.cache_data(ttl=240, show_spinner=False)
+def get_cached_deals(
+    stores_tuple,
+    niche,
+    min_discount,
+    price_max,
+    keyword,
+    viral_mode,
+    viral_cat,
+    only_flash=False,
+    only_discounted=False,
+    sort_by="best",
+    shopee_creds_tuple=("", ""),
+):
     return search_deals(
         selected_stores=list(stores_tuple) if stores_tuple else None,
         niche=niche,
@@ -238,8 +268,42 @@ def get_cached_deals(stores_tuple, niche, min_discount, price_max, keyword, vira
         price_max=price_max,
         search_keyword=keyword,
         viral_mode=viral_mode,
-        viral_category=viral_cat
+        viral_category=viral_cat,
+        only_flash=only_flash,
+        only_discounted=only_discounted,
+        sort_by=sort_by,
+        shopee_creds=shopee_creds_tuple,
     )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_cached_studio_png(
+    title: str,
+    price_str: str,
+    old_price_str: str,
+    discount_pct: int,
+    store: str,
+    image_url: str,
+    format_type: str,
+    instagram_handle: str,
+    theme_name: str,
+) -> bytes:
+    """Gera e mantém em cache o PNG da arte do Estúdio quando vem por URL, evitando travar reruns da Aba 1."""
+    img = generate_social_image(
+        title=title,
+        price_str=price_str,
+        old_price_str=old_price_str,
+        discount_pct=discount_pct,
+        store=store,
+        image_url=image_url,
+        uploaded_image=None,
+        format_type=format_type,
+        instagram_handle=instagram_handle,
+        theme_name=theme_name,
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 # Session State Init
 if "deals_list" not in st.session_state:
@@ -250,6 +314,10 @@ if "last_search_time" not in st.session_state:
     st.session_state.last_search_time = 0.0
 if "selected_indices" not in st.session_state:
     st.session_state.selected_indices = set()
+if "display_limit" not in st.session_state:
+    st.session_state.display_limit = 30
+if "last_query_sig" not in st.session_state:
+    st.session_state.last_query_sig = None
 
 # Header
 col_logo, col_profile, col_info = st.columns([2.6, 1.4, 1.0])
@@ -268,7 +336,9 @@ with col_profile:
         st.session_state.active_profile_name = selected_prof
         st.rerun()
 with col_info:
-    tags_count = sum(1 for v in config.get("affiliate_tags", {}).values() if v.strip())
+    store_tag_keys = ["amazon", "mercadolivre", "shopee", "magalu", "casasbahia", "shein", "aliexpress", "dafiti"]
+    aff_tags = config.get("affiliate_tags", {})
+    tags_count = sum(1 for k in store_tag_keys if aff_tags.get(k, "").strip())
     st.info(f"🏷️ **{tags_count}/8** Lojas | ⚡ WhatsApp Ativo")
 
 # Tabs
@@ -292,8 +362,8 @@ with tab_radar:
     
     with st.container(border=True):
         if is_viral_mode:
-            st.markdown("### 🔥 Achadinhos Virais de Alta Recorrência")
-            st.caption("Foco nos itens mais comprados do TikTok, Reels e canais de promoções:")
+            st.markdown("### 🔥 Achadinhos Virais & Mais Vendidos")
+            st.caption("Pré-seleção automática por maior desconto real, ofertas relâmpago, avaliações e índice de vendas:")
             
             col_v1, col_v2, col_v3 = st.columns([1.5, 1.2, 1.2])
             with col_v1:
@@ -316,20 +386,21 @@ with tab_radar:
             niche_param = "Todos os Nichos"
             search_term_param = ""
             actual_cat_param = "" if "Todos" in viral_cat else viral_cat
+            price_limit = 10000
             
         else:
-            st.markdown("### 🔍 Busca Geral & Filtro por Loja")
+            st.markdown("### 🔍 Busca Direta por Loja & Nicho")
             col_f1, col_f2, col_f3 = st.columns([1.5, 1.2, 1.2])
             
             with col_f1:
                 all_stores = [
                     "Todas as Lojas",
-                    "Amazon Brasil",
-                    "Mercado Livre",
                     "Shopee",
+                    "Mercado Livre",
+                    "Shein",
+                    "Amazon Brasil",
                     "Magazine Luiza",
                     "Casas Bahia",
-                    "Shein",
                     "AliExpress",
                     "Dafiti"
                 ]
@@ -338,7 +409,7 @@ with tab_radar:
                     options=all_stores,
                     default=["Todas as Lojas"]
                 )
-                selected_stores_param = tuple(selected_stores)
+                selected_stores_param = tuple(selected_stores) if selected_stores else ("Todas as Lojas",)
                 
                 niche_param = st.selectbox(
                     "Nicho:",
@@ -355,34 +426,75 @@ with tab_radar:
                 )
                 search_term_param = st.text_input(
                     "Termo Específico (opcional):",
-                    placeholder="Ex: perfume, airfryer, fone...",
+                    placeholder="Ex: vestido, airfryer, fone...",
                 )
                 
             with col_f3:
                 price_limit = st.slider(
                     "Preço Máximo (R$):",
                     min_value=20,
-                    max_value=2000,
-                    value=1000,
+                    max_value=5000,
+                    value=2500,
                     step=50,
                     format="R$ %d"
                 )
                 btn_search = st.button("🚀 Rastrear Ofertas com Desconto", type="primary", use_container_width=True)
                 
             actual_cat_param = ""
+
+        # Critérios de Qualidade e Ordenação (Vendas, Avaliações, Oferta Relâmpago, Desconto)
+        q_c1, q_c2, q_c3 = st.columns([1.8, 1.1, 1.1])
+        with q_c1:
+            sort_choice = st.selectbox(
+                "Ordenar por Qualidade:",
+                options=[
+                    "🔥 Melhores Ofertas (Relâmpago + Vendas + Desconto)",
+                    "💥 Maior Desconto (% OFF)",
+                    "⭐ Mais Vendidos & Bem Avaliados",
+                    "💰 Menor Preço",
+                ],
+                index=0,
+                key="sort_selector"
+            )
+            sort_slug = (
+                "discount" if "Maior Desconto" in sort_choice
+                else ("sales" if "Mais Vendidos" in sort_choice
+                else ("price_asc" if "Menor Preço" in sort_choice else "best"))
+            )
+        with q_c2:
+            st.write("")
+            only_flash = st.checkbox("⚡ Só Relâmpago / +Vendidos", value=False, key="chk_only_flash")
+        with q_c3:
+            st.write("")
+            only_discounted = st.checkbox("💥 Só c/ Desconto Real", value=False, key="chk_only_disc")
             
-    # Execução Paralela Rápida com Auto-Load Inteligente
+    # Execução Paralela Rápida com Atualização Automática nos Filtros
     current_kw = search_term_param.strip() if not is_viral_mode else ""
-    kw_changed = bool(current_kw and current_kw != st.session_state.get("last_kw", ""))
+    shopee_creds_tuple = (
+        config.get("affiliate_tags", {}).get("shopee_app_id", "").strip(),
+        config.get("affiliate_tags", {}).get("shopee_app_secret", "").strip(),
+    )
+    query_sig = (
+        selected_stores_param,
+        niche_param,
+        viral_discount,
+        10000 if is_viral_mode else price_limit,
+        current_kw,
+        is_viral_mode,
+        actual_cat_param,
+        only_flash,
+        only_discounted,
+        sort_slug,
+        shopee_creds_tuple,
+    )
     
-    # Auto-carregamento imediato no primeiro acesso para nunca mostrar tela vazia
-    should_search = btn_search or kw_changed or (len(st.session_state.deals_list) == 0)
+    should_search = btn_search or (query_sig != st.session_state.last_query_sig) or (len(st.session_state.deals_list) == 0)
     
     if should_search:
-        if kw_changed:
-            st.session_state.last_kw = current_kw
+        st.session_state.last_query_sig = query_sig
+        st.session_state.display_limit = 30
         t_start = time.time()
-        with st.spinner("⚡ Varrendo lojas simultaneamente em paralelo..."):
+        with st.spinner("⚡ Varrendo catálogos reais das lojas e pré-selecionando as melhores ofertas..."):
             found = get_cached_deals(
                 stores_tuple=selected_stores_param,
                 niche=niche_param,
@@ -390,7 +502,11 @@ with tab_radar:
                 price_max=10000 if is_viral_mode else price_limit,
                 keyword=current_kw,
                 viral_mode=is_viral_mode,
-                viral_cat=actual_cat_param
+                viral_cat=actual_cat_param,
+                only_flash=only_flash,
+                only_discounted=only_discounted,
+                sort_by=sort_slug,
+                shopee_creds_tuple=shopee_creds_tuple,
             )
             st.session_state.deals_list = found
             st.session_state.last_search_time = time.time() - t_start
@@ -399,14 +515,15 @@ with tab_radar:
     deals = st.session_state.deals_list
     
     if deals:
-        for d in deals:
+        visible_deals = deals[:st.session_state.display_limit]
+        for d in visible_deals:
             if d.get("image") and not str(d["image"]).startswith("http"):
                 d["image"] = sanitize_img_url(d["image"], d.get("store", ""))
             if "aff_res" not in d:
                 d["aff_res"] = convert_to_affiliate(d.get("url", ""), d.get("store", ""), config)
                 
-        speed_msg = f"⚡ Busca realizada em apenas **{st.session_state.last_search_time:.2f}s**!" if st.session_state.last_search_time > 0 else ""
-        st.success(f"✨ Encontradas **{len(deals)}** promoções no radar! {speed_msg}")
+        speed_msg = f"⚡ Busca realizada em **{st.session_state.last_search_time:.2f}s**!" if st.session_state.last_search_time > 0 else ""
+        st.success(f"✨ Encontradas **{len(deals)}** promoções qualificadas no radar! (Exibindo Top **{len(visible_deals)}**) {speed_msg}")
         
         # ========================================================
         # BARRA DE DISPARO EM LOTE (ATÉ 10 OFERTAS COM 1 CLIQUE)
@@ -469,25 +586,27 @@ with tab_radar:
                         status_text.empty()
                         st.success(f"🎉 **{success_count} de {len(selected_deals)}** ofertas disparadas com foto e legenda para o grupo com sucesso!")
 
-        # Grid de Cards (Renderização Leve e Instantânea)
+        # Grid de Cards (Renderização Leve e Instantânea paginada de 30 em 30)
         cols_per_row = 3
-        for i in range(0, len(deals), cols_per_row):
+        for i in range(0, len(visible_deals), cols_per_row):
             cols = st.columns(cols_per_row)
             for j in range(cols_per_row):
                 idx = i + j
-                if idx < len(deals):
-                    deal = deals[idx]
+                if idx < len(visible_deals):
+                    deal = visible_deals[idx]
                     with cols[j]:
                         with st.container(border=True):
                             store_name = deal.get("store", "Loja")
                             disc = deal.get("discount_pct", 0)
                             is_viral = deal.get("is_viral", False)
+                            is_flash = deal.get("is_flash", False)
+                            is_best = deal.get("is_bestseller", False)
                             
                             # 1. Topo: Seleção e Badges
-                            col_chk, col_badges = st.columns([1.3, 1.7])
+                            col_chk, col_badges = st.columns([1.15, 1.85])
                             with col_chk:
                                 currently_selected = idx in st.session_state.selected_indices
-                                is_checked = st.checkbox("Fila (10 máx)", value=currently_selected, key=f"chk_{idx}")
+                                is_checked = st.checkbox("Fila (10)", value=currently_selected, key=f"chk_{idx}")
                                 if is_checked != currently_selected:
                                     if is_checked:
                                         if len(st.session_state.selected_indices) < 10:
@@ -502,7 +621,11 @@ with tab_radar:
                             with col_badges:
                                 b_html = '<div style="text-align: right; display: flex; justify-content: flex-end; gap: 4px; flex-wrap: wrap;">'
                                 b_html += f'<span class="badge-store">{store_name}</span>'
-                                if is_viral:
+                                if is_flash:
+                                    b_html += '<span class="badge-flash">⚡ RELÂMPAGO</span>'
+                                if is_best:
+                                    b_html += '<span class="badge-best">🏆 +VENDIDO</span>'
+                                elif is_viral:
                                     b_html += '<span class="badge-viral">✨ VIRAL</span>'
                                 if disc and disc > 0:
                                     b_html += f'<span class="badge-discount">-{disc}%</span>'
@@ -529,22 +652,26 @@ with tab_radar:
                             title = deal.get("title", "Produto sem título")
                             st.markdown(f'<div class="product-title" title="{title}">{title}</div>', unsafe_allow_html=True)
                             
-                            # 4. Preços Formatados & Cupons
+                            # 4. Preços Formatados & Provas Sociais Reais
                             p_val = deal.get("price", 0.0)
                             op_val = deal.get("old_price")
                             p_str = f"R$ {p_val:,.2f}".replace(',', 'v').replace('.', ',').replace('v', '.') if p_val else deal.get("price_str", "Confira")
                             op_str = f"R$ {op_val:,.2f}".replace(',', 'v').replace('.', ',').replace('v', '.') if (op_val and op_val > p_val) else ""
                             
-                            social_proof_html = ""
-                            if is_viral:
-                                social_proof_html = '<div style="color: #64748B; font-size: 0.74rem; margin-top: 3px; font-weight: 600;">🔥 +1mil Vendidos • ⚡ Alta Procura</div>'
+                            sales_label = deal.get("sales_label", "")
+                            if not sales_label and is_viral:
+                                sales_label = "✨ Achado Viral em Alta"
+                            social_proof_html = (
+                                f'<div style="color: #94A3B8; font-size: 0.74rem; margin-top: 3px; font-weight: 600;">{sales_label}</div>'
+                                if sales_label else ""
+                            )
                             
                             pricing_html = f'''
                             <div class="product-pricing">
                                 {f'<span class="price-old">{op_str}</span>' if op_str else ''}
                                 <div style="display: flex; align-items: baseline; gap: 6px;">
                                     <span class="price-promo">{p_str}</span>
-                                    <span style="font-size: 0.75rem; color: #10B981; font-weight: 700;">no Pix</span>
+                                    <span style="font-size: 0.75rem; color: #10B981; font-weight: 700;">no Pix / à vista</span>
                                 </div>
                                 {social_proof_html}
                                 {f'<span class="coupon-tag">🎟️ Cupom: {deal.get("coupon")}</span>' if deal.get("coupon") else ''}
@@ -607,8 +734,15 @@ with tab_radar:
                                 st.text_input("Link Oficial Gerado:", value=final_aff_link, key=f"link_{idx}")
                                 st.caption(f"Status: *{aff_res['status']}*")
                                 st.text_area("Texto formatado WhatsApp:", wa_copy, height=120, key=f"wa_txt_{idx}")
+
+        if len(deals) > len(visible_deals):
+            rem = len(deals) - len(visible_deals)
+            st.write("")
+            if st.button(f"➕ Carregar +30 Ofertas ({rem} restantes no radar)", type="secondary", use_container_width=True):
+                st.session_state.display_limit += 30
+                st.rerun()
     else:
-        st.info("💡 Clique no botão **'🚀 Rastrear'** acima para iniciar a busca instantânea com os novos filtros.")
+        st.info("💡 Nenhuma promoção encontrada para esta combinação exata de filtros. Tente reduzir o desconto mínimo, desmarcar um filtro ou selecionar 'Todas as Lojas'.")
 
 
 # ==========================================
@@ -716,25 +850,35 @@ with tab_studio:
             pil_uploaded = None
             if uploaded_file:
                 pil_uploaded = Image.open(uploaded_file)
-                
-            final_img = generate_social_image(
-                title=post_title,
-                price_str=post_price,
-                old_price_str=post_old_price,
-                discount_pct=post_disc,
-                store=post_store,
-                image_url=post_img_url,
-                uploaded_image=pil_uploaded,
-                format_type=format_slug,
-                instagram_handle=config.get("instagram", {}).get("handle", "@mimozae.of"),
-                theme_name=post_theme
-            )
+                final_img = generate_social_image(
+                    title=post_title,
+                    price_str=post_price,
+                    old_price_str=post_old_price,
+                    discount_pct=post_disc,
+                    store=post_store,
+                    image_url=post_img_url,
+                    uploaded_image=pil_uploaded,
+                    format_type=format_slug,
+                    instagram_handle=config.get("instagram", {}).get("handle", "@mimozae.of"),
+                    theme_name=post_theme
+                )
+                buf = io.BytesIO()
+                final_img.save(buf, format="PNG")
+                byte_im = buf.getvalue()
+            else:
+                byte_im = get_cached_studio_png(
+                    title=post_title,
+                    price_str=post_price,
+                    old_price_str=post_old_price,
+                    discount_pct=post_disc,
+                    store=post_store,
+                    image_url=post_img_url,
+                    format_type=format_slug,
+                    instagram_handle=config.get("instagram", {}).get("handle", "@mimozae.of"),
+                    theme_name=post_theme
+                )
             
-            render_deal_image(final_img, caption=f"Card Gerado - {post_format}", width=440 if format_slug == "feed" else 330)
-            
-            buf = io.BytesIO()
-            final_img.save(buf, format="PNG")
-            byte_im = buf.getvalue()
+            render_deal_image(byte_im, caption=f"Card Gerado - {post_format}", width=440 if format_slug == "feed" else 330)
             
             st.download_button(
                 label=f"⬇️ Baixar Imagem {post_format.split()[0]} (PNG Alta Resolução)",
@@ -797,6 +941,14 @@ with tab_settings:
             shn = st.text_input("Shein (Affiliate Tag / ID):", value=tags.get("shein", ""))
             ali = st.text_input("AliExpress (Portals Tag / Tracking ID):", value=tags.get("aliexpress", ""))
             daf = st.text_input("Dafiti (Awin Publisher ID):", value=tags.get("dafiti", ""))
+
+        st.markdown("#### 🧡 API Oficial Shopee Afiliados (Opcional — Puxa Mais Vendidos & Estrelas direto da Shopee)")
+        st.caption("No painel [affiliate.shopee.com.br](https://affiliate.shopee.com.br) > **API Aberta**, copie seu App ID e Secret para buscar centenas de ofertas direto da Shopee com vendas reais e links já afiliados:")
+        col_shp1, col_shp2 = st.columns(2)
+        with col_shp1:
+            shp_app_id = st.text_input("Shopee Open API App ID:", value=tags.get("shopee_app_id", ""), help="Ex: 18392019283")
+        with col_shp2:
+            shp_app_secret = st.text_input("Shopee Open API Secret Key:", value=tags.get("shopee_app_secret", ""), type="password")
             
         st.markdown("---")
         st.markdown(f"### 📲 Configurações do WhatsApp — {curr_prof}")
@@ -883,6 +1035,8 @@ with tab_settings:
                     "amazon": amz.strip(),
                     "mercadolivre": ml.strip(),
                     "shopee": shp.strip(),
+                    "shopee_app_id": shp_app_id.strip(),
+                    "shopee_app_secret": shp_app_secret.strip(),
                     "magalu": mgl.strip(),
                     "casasbahia": cb.strip(),
                     "shein": shn.strip(),
