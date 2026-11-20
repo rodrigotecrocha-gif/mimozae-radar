@@ -5,7 +5,7 @@ from PIL import Image
 
 from config import load_config, save_config, load_full_config, get_profile, save_profile, create_new_profile
 from services.scraper import search_deals, analyze_single_url, sanitize_img_url, NICHES, VIRAL_CATALOG
-from services.affiliate import convert_to_affiliate, identify_store, clean_product_url
+from services.affiliate import convert_to_affiliate, identify_store, clean_product_url, resolve_deals_links_batch
 from services.copywriter import generate_whatsapp_copy, generate_instagram_caption
 from services.image_generator import generate_social_image, THEMES
 from services.whatsapp_sender import generate_wa_link, send_whatsapp_media_api, generate_batch_super_message
@@ -244,7 +244,11 @@ if st.session_state.active_profile_name not in available_profiles:
 
 # Carrega a configuração do perfil ativo da sessão!
 config = get_profile(st.session_state.active_profile_name)
-wa_mode = config.get("whatsapp", {}).get("mode", "web") # 'web', 'app' or 'universal'
+wa_cfg_global = config.get("whatsapp", {})
+wa_mode = wa_cfg_global.get("mode", "web") # 'web', 'app' or 'universal'
+wa_endpoint_global = (wa_cfg_global.get("api_endpoint") or wa_cfg_global.get("webhook_url") or "").strip()
+wa_target_global = (wa_cfg_global.get("target_group") or "").strip()
+has_wa_api = bool(wa_endpoint_global and wa_target_global)
 
 # Caching de Alto Desempenho
 @st.cache_data(ttl=240, show_spinner=False)
@@ -336,10 +340,13 @@ with col_profile:
         st.session_state.active_profile_name = selected_prof
         st.rerun()
 with col_info:
-    store_tag_keys = ["amazon", "mercadolivre", "shopee", "magalu", "casasbahia", "shein", "aliexpress", "dafiti"]
     aff_tags = config.get("affiliate_tags", {})
-    tags_count = sum(1 for k in store_tag_keys if aff_tags.get(k, "").strip())
-    st.info(f"🏷️ **{tags_count}/8** Lojas | ⚡ WhatsApp Ativo")
+    ml_ok = bool(aff_tags.get("mercadolivre", "").strip())
+    shp_ok = bool(aff_tags.get("shopee", "").strip() or (aff_tags.get("shopee_app_id", "").strip() and aff_tags.get("shopee_app_secret", "").strip()))
+    shn_ok = bool(aff_tags.get("shein", "").strip())
+    tags_count = sum([ml_ok, shp_ok, shn_ok])
+    wa_badge = "🚀 API Instantânea" if has_wa_api else "📲 WhatsApp Web"
+    st.info(f"🏷️ **{tags_count}/3** Lojas | {wa_badge}")
 
 # Tabs
 tab_radar, tab_analyzer, tab_studio, tab_settings = st.tabs([
@@ -395,14 +402,9 @@ with tab_radar:
             with col_f1:
                 all_stores = [
                     "Todas as Lojas",
-                    "Shopee",
                     "Mercado Livre",
+                    "Shopee",
                     "Shein",
-                    "Amazon Brasil",
-                    "Magazine Luiza",
-                    "Casas Bahia",
-                    "AliExpress",
-                    "Dafiti"
                 ]
                 selected_stores = st.multiselect(
                     "Lojas:",
@@ -516,11 +518,14 @@ with tab_radar:
     
     if deals:
         visible_deals = deals[:st.session_state.display_limit]
+        resolved_visible = resolve_deals_links_batch(visible_deals)
+        if len(resolved_visible) < len(visible_deals):
+            deals = [d for d in deals if not d.get("_invalid_link")]
+            st.session_state.deals_list = deals
+            visible_deals = deals[:st.session_state.display_limit]
         for d in visible_deals:
             if d.get("image") and not str(d["image"]).startswith("http"):
                 d["image"] = sanitize_img_url(d["image"], d.get("store", ""))
-            if "aff_res" not in d:
-                d["aff_res"] = convert_to_affiliate(d.get("url", ""), d.get("store", ""), config)
                 
         speed_msg = f"⚡ Busca realizada em **{st.session_state.last_search_time:.2f}s**!" if st.session_state.last_search_time > 0 else ""
         st.success(f"✨ Encontradas **{len(deals)}** promoções qualificadas no radar! (Exibindo Top **{len(visible_deals)}**) {speed_msg}")
@@ -532,6 +537,8 @@ with tab_radar:
         
         with st.container(border=True):
             st.markdown(f"#### ⚡ Central de Disparo em Lote • Fila: **{len(selected_deals)}/10** ofertas selecionadas")
+            if not has_wa_api:
+                st.caption("💡 *Dica de velocidade:* links `WhatsApp Web` sempre abrem nova aba por padrão do navegador. Para envio **instantâneo em 1 clique sem abrir abas**, conecte uma API gratuita/nuvem (Evolution API ou Z-API) na aba **⚙️ Configurações & Afiliados** ou copie o texto pronto nos cards.")
             
             # Botões de Seleção Instantânea (Zero Delay / 1 Clique)
             q_col1, q_col2, q_col3, q_col4 = st.columns([1.5, 1.5, 2.0, 1.2])
@@ -547,34 +554,39 @@ with tab_radar:
                 # Disparo Direto no WhatsApp Web (Super Mensagem 10 em 1)
                 super_msg_text = generate_batch_super_message(selected_deals, config) if selected_deals else ""
                 super_wa_link = generate_wa_link(super_msg_text, target_mode=wa_mode) if selected_deals else ""
-                st.link_button(f"📲 Abrir Super Mensagem ({len(selected_deals)} em 1)", super_wa_link, disabled=(len(selected_deals) == 0), type="primary", use_container_width=True)
+                st.link_button(f"📲 Abrir Super Mensagem ({len(selected_deals)} em 1)", super_wa_link, disabled=(len(selected_deals) == 0), type="secondary" if has_wa_api else "primary", use_container_width=True)
             with q_col4:
                 if st.button("🧹 Limpar Fila", use_container_width=True):
                     st.session_state.selected_indices = set()
                     st.rerun()
                     
             if selected_deals:
-                with st.expander(f"📋 Ver Texto Pronto da Super Mensagem ({len(selected_deals)} Achadinhos)"):
+                with st.expander(f"📋 Ver & Copiar Super Mensagem ({len(selected_deals)} Achadinhos)"):
                     st.code(super_msg_text, language="")
                     
                 b_api_col1, b_api_col2 = st.columns([2.5, 1.5])
                 with b_api_col1:
-                    st.caption("🤖 **Disparo 100% Automático via API:** Envia cada oferta individualmente com foto + legenda em segundo plano com intervalo anti-ban de 2s direto para o grupo do WhatsApp.")
+                    st.caption("🤖 **Disparo 100% Automático via API (Zero Novas Abas):** Envia cada oferta individualmente com foto + legenda + seu link direto com intervalo anti-ban de 2s direto para o grupo.")
                 with b_api_col2:
-                    btn_auto_api = st.button("🚀 Disparar Fila via WhatsApp API", type="secondary", use_container_width=True)
+                    btn_auto_api = st.button("🚀 Disparar Fila Instantâneo (API)", type="primary" if has_wa_api else "secondary", use_container_width=True)
                     
                 if btn_auto_api:
-                    endpoint = config.get("whatsapp", {}).get("api_endpoint") or config.get("whatsapp", {}).get("webhook_url")
-                    if not endpoint:
-                        st.error("⚠️ Você ainda não configurou o Endpoint da WhatsApp API na aba '⚙️ Configurações & Afiliados'. Preencha a URL da sua Evolution API ou Z-API.")
+                    if not has_wa_api:
+                        st.error("⚠️ Configure o Endpoint e o ID do Grupo/Telefone na aba '⚙️ Configurações & Afiliados' (Evolution API ou Z-API) para ativar o disparo instantâneo sem abrir abas.")
                     else:
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         success_count = 0
                         for s_idx, d in enumerate(selected_deals):
                             status_text.text(f"Enviando oferta {s_idx+1} de {len(selected_deals)}: {d.get('title')[:30]}...")
-                            aff = convert_to_affiliate(d.get("url", ""), d.get("store", ""), config)
-                            caption = generate_whatsapp_copy(d, aff["url"], config.get("whatsapp", {}).get("group_link", ""))
+                            aff = convert_to_affiliate(
+                                d.get("url", ""),
+                                d.get("store", ""),
+                                config,
+                                resolve_redirects=True,
+                                is_own_shopee_api_link=(d.get("source") == "Shopee API Oficial"),
+                            )
+                            caption = generate_whatsapp_copy(d, aff["url"], wa_cfg_global.get("group_link", ""))
                             img_url = d.get("image", "")
                             
                             res = send_whatsapp_media_api(config, image_url=img_url, caption=caption)
@@ -584,7 +596,7 @@ with tab_radar:
                             progress_bar.progress((s_idx + 1) / len(selected_deals))
                             
                         status_text.empty()
-                        st.success(f"🎉 **{success_count} de {len(selected_deals)}** ofertas disparadas com foto e legenda para o grupo com sucesso!")
+                        st.success(f"🎉 **{success_count} de {len(selected_deals)}** ofertas disparadas instantaneamente para o grupo com foto e seu link!")
 
         # Grid de Cards (Renderização Leve e Instantânea paginada de 30 em 30)
         cols_per_row = 3
@@ -679,14 +691,28 @@ with tab_radar:
                             '''
                             st.markdown(pricing_html, unsafe_allow_html=True)
                             
-                            # 5. Link de Afiliado
-                            aff_res = deal.get("aff_res") or convert_to_affiliate(deal.get("url", ""), store_name, config)
+                            # 5. Link Direto Limpo + Afiliado Próprio
+                            aff_res = convert_to_affiliate(
+                                deal.get("url", ""),
+                                store_name,
+                                config,
+                                resolve_redirects=True,
+                                is_own_shopee_api_link=(deal.get("source") == "Shopee API Oficial"),
+                            )
                             final_aff_link = aff_res["url"]
                             
-                            # 6. Botão de Envio Rápido no WhatsApp Web
-                            wa_copy = generate_whatsapp_copy(deal, final_aff_link, config.get("whatsapp", {}).get("group_link", ""))
+                            # 6. Envio Rápido WhatsApp (Instantâneo via API sem abrir abas, ou link direto)
+                            wa_copy = generate_whatsapp_copy(deal, final_aff_link, wa_cfg_global.get("group_link", ""))
                             wa_direct_link = generate_wa_link(wa_copy, target_mode=wa_mode)
-                            st.link_button("📲 Enviar WhatsApp Web", wa_direct_link, type="primary", use_container_width=True)
+                            if has_wa_api:
+                                if st.button("⚡ Enviar Agora (Sem Abrir Abas)", key=f"instant_wa_{idx}", type="primary", use_container_width=True):
+                                    res_send = send_whatsapp_media_api(config, image_url=clean_img, caption=wa_copy)
+                                    if res_send.get("success"):
+                                        st.success("✅ Enviado direto para o grupo!")
+                                    else:
+                                        st.error(f"Falha API: {res_send.get('error') or res_send.get('response', '')}")
+                            else:
+                                st.link_button("📲 Enviar WhatsApp Web", wa_direct_link, type="primary", use_container_width=True)
                             
                             # 7. Gavetas Auxiliares (Instagram & Detalhes)
                             with st.expander("📸 Post Instagram (@mimozae.of)"):
@@ -730,10 +756,14 @@ with tab_radar:
                                 ig_caption = generate_instagram_caption(deal, final_aff_link, config)
                                 st.text_area("Legenda pronta:", ig_caption, height=110, key=f"cap_{idx}")
                                 
-                            with st.expander("🔗 Link de Afiliado & Copy"):
-                                st.text_input("Link Oficial Gerado:", value=final_aff_link, key=f"link_{idx}")
+                            with st.expander("🔗 Link de Afiliado & Copiar Mensagem"):
+                                st.text_input("Link Oficial (Seu Afiliado):", value=final_aff_link, key=f"link_{idx}")
+                                st.text_input("Link Direto do Produto (Limpo):", value=aff_res.get("clean_url", deal.get("url", "")), key=f"clean_link_{idx}")
                                 st.caption(f"Status: *{aff_res['status']}*")
-                                st.text_area("Texto formatado WhatsApp:", wa_copy, height=120, key=f"wa_txt_{idx}")
+                                if has_wa_api:
+                                    st.link_button("📲 Abrir no WhatsApp Web (opcional)", wa_direct_link, use_container_width=True)
+                                st.caption("📋 Clique no ícone à direita para copiar sem abrir nova aba:")
+                                st.code(wa_copy, language="")
 
         if len(deals) > len(visible_deals):
             rem = len(deals) - len(visible_deals)
@@ -749,14 +779,14 @@ with tab_radar:
 # ABA 2: ANALISADOR DE LINK AVULSO
 # ==========================================
 with tab_analyzer:
-    st.subheader("🔗 Cole qualquer link de produto para gerar o link e posts")
-    st.write("Achou uma oferta navegando na Amazon, Mercado Livre, Shopee, Magalu, Casas Bahia, Shein, AliExpress ou Dafiti? Cole o link abaixo:")
+    st.subheader("🔗 Cole qualquer link de produto para gerar seu link de afiliado e posts")
+    st.write("Achou uma oferta no **Mercado Livre**, **Shopee** ou **Shein** (ou até link do Promobit/Pelando/encurtado)? Cole abaixo para extrair o link limpo do produto e aplicar o SEU afiliado:")
     
-    input_url = st.text_input("Cole o link aqui:", placeholder="https://www.mercadolivre.com.br/... ou https://www.amazon.com.br/...", key="manual_url")
+    input_url = st.text_input("Cole o link aqui:", placeholder="https://www.mercadolivre.com.br/... ou https://shopee.com.br/... ou https://br.shein.com/...", key="manual_url")
     
     if st.button("⚡ Processar Link & Gerar Afiliado", type="primary"):
         if input_url:
-            with st.spinner("Analisando página do produto e aplicando tag de afiliado..."):
+            with st.spinner("Removendo links de terceiros e gerando o seu link de afiliado..."):
                 parsed = analyze_single_url(input_url)
                 if parsed.get("success"):
                     st.success("✅ Produto identificado com sucesso!")
@@ -781,7 +811,6 @@ with tab_analyzer:
                                 
                         with col_p2:
                             st.markdown(f"### {parsed['title']}")
-                            st.markdown(f"**Loja Detectada:** {parsed['store']}")
                             if parsed.get("old_price_str"):
                                 st.markdown(f"**De:** ~{parsed['old_price_str']}~")
                             st.markdown(f"**Por:** <span class='price-promo'>{parsed['price_str']}</span>", unsafe_allow_html=True)
@@ -790,15 +819,25 @@ with tab_analyzer:
                             if parsed.get("is_viral"):
                                 st.markdown('<span class="badge-viral">✨ PRODUTO VIRAL</span>', unsafe_allow_html=True)
                                 
-                            aff = convert_to_affiliate(input_url, parsed["store"], config)
-                            st.text_input("🔗 Link Oficial de Afiliado Gerado:", value=aff["url"])
+                            aff = convert_to_affiliate(parsed.get("url") or input_url, parsed["store"], config, resolve_redirects=True)
+                            st.text_input("🔗 Link Oficial de Afiliado (Sua Conta):", value=aff["url"])
+                            st.text_input("🧼 Link Limpo do Produto:", value=aff.get("clean_url", parsed.get("url", "")))
                             st.caption(f"Status: {aff['status']}")
                             
-                            wa_text = generate_whatsapp_copy(parsed, aff["url"], config.get("whatsapp", {}).get("group_link", ""))
-                            st.text_area("Copy formatada para WhatsApp:", wa_text, height=140)
+                            wa_text = generate_whatsapp_copy(parsed, aff["url"], wa_cfg_global.get("group_link", ""))
+                            st.code(wa_text, language="")
                             
                             wa_open = generate_wa_link(wa_text, target_mode=wa_mode)
-                            st.link_button("📲 Abrir WhatsApp Web Direto", wa_open, type="primary", use_container_width=True)
+                            if has_wa_api:
+                                if st.button("⚡ Enviar Agora via API (Sem Abrir Abas)", key="analyzer_api_send", type="primary", use_container_width=True):
+                                    res_an = send_whatsapp_media_api(config, image_url=clean_p_img, caption=wa_text)
+                                    if res_an.get("success"):
+                                        st.success("✅ Enviado para o grupo!")
+                                    else:
+                                        st.error(f"Falha API: {res_an.get('error') or res_an.get('response', '')}")
+                                st.link_button("📲 Abrir WhatsApp Web (opcional)", wa_open, use_container_width=True)
+                            else:
+                                st.link_button("📲 Abrir WhatsApp Web Direto", wa_open, type="primary", use_container_width=True)
                 else:
                     st.error(f"Não foi possível extrair automaticamente: {parsed.get('error')}. Tente novamente ou use o link direto.")
         else:
@@ -828,7 +867,7 @@ with tab_studio:
             with col_pr3:
                 post_disc = st.number_input("% Desconto:", min_value=0, max_value=99, value=50, key="studio_disc")
                 
-            post_store = st.text_input("Nome da Loja:", value="Amazon Brasil", key="studio_store")
+            post_store = st.text_input("Nome da Loja:", value="Shopee", key="studio_store")
             post_theme = st.selectbox("Paleta de Cores:", options=list(THEMES.keys()), index=0, key="studio_theme")
             post_format = st.radio("Formato da Imagem:", options=["Feed (1:1 / 1080x1080)", "Story (9:16 / 1080x1920)"], index=0, key="studio_fmt")
             format_slug = "feed" if "Feed" in post_format else "story"
@@ -839,7 +878,7 @@ with tab_studio:
             post_img_url = ""
             uploaded_file = None
             if img_option == "URL da Imagem":
-                post_img_url = st.text_input("Link da imagem:", value="https://m.media-amazon.com/images/I/81hcM4X43PL._AC_SY300_SX300_QL70_ML2_.jpg", key="studio_img_url")
+                post_img_url = st.text_input("Link da imagem:", value="", placeholder="Cole a URL da imagem do produto (opcional)...", key="studio_img_url")
             else:
                 uploaded_file = st.file_uploader("Selecione foto do produto (PNG/JPG):", type=["png", "jpg", "jpeg", "webp"], key="studio_upload")
             
@@ -926,24 +965,19 @@ with tab_settings:
                     st.rerun()
                     
     with st.form("settings_form"):
-        st.markdown(f"### 🛒 Tags de Afiliado — {curr_prof}")
+        st.markdown(f"### 🛒 Afiliados Ativos (Mercado Livre, Shopee & Shein) — {curr_prof}")
         tags = config.get("affiliate_tags", {})
         
-        col_tag1, col_tag2 = st.columns(2)
+        col_tag1, col_tag2, col_tag3 = st.columns(3)
         with col_tag1:
-            amz = st.text_input("Amazon Brasil (Associate Tag):", value=tags.get("amazon", ""), help="Ex: mimozae-20")
-            ml = st.text_input("Mercado Livre (ID / Matt Tool):", value=tags.get("mercadolivre", ""), help="Ex: seu código de afiliado Mercado Livre")
-            shp = st.text_input("Shopee (Sub_ID ou Tracking):", value=tags.get("shopee", ""), help="Ex: mimozae_promo")
-            mgl = st.text_input("Magazine Luiza (Magazine Você Loja):", value=tags.get("magalu", ""), help="Ex: magazinemimozae (nome da sua loja do Magazine Você)")
-            
+            ml = st.text_input("Mercado Livre (Matt Tool ID):", value=tags.get("mercadolivre", ""), help="Ex: seu código numérico matt_tool do portal de afiliados ML")
         with col_tag2:
-            cb = st.text_input("Casas Bahia (Lomadee / Awin ID):", value=tags.get("casasbahia", ""), help="Ex: seu ID de afiliado Lomadee/Awin")
-            shn = st.text_input("Shein (Affiliate Tag / ID):", value=tags.get("shein", ""))
-            ali = st.text_input("AliExpress (Portals Tag / Tracking ID):", value=tags.get("aliexpress", ""))
-            daf = st.text_input("Dafiti (Awin Publisher ID):", value=tags.get("dafiti", ""))
+            shp = st.text_input("Shopee (ID an_... ou Sub_ID):", value=tags.get("shopee", ""), help="Ex: an_18303210286 ou Sub_ID personalizado")
+        with col_tag3:
+            shn = st.text_input("Shein (Affiliate Tag / ID):", value=tags.get("shein", ""), help="Ex: seu aff_id ou parâmetro de afiliado Shein")
 
-        st.markdown("#### 🧡 API Oficial Shopee Afiliados (Opcional — Puxa Mais Vendidos & Estrelas direto da Shopee)")
-        st.caption("No painel [affiliate.shopee.com.br](https://affiliate.shopee.com.br) > **API Aberta**, copie seu App ID e Secret para buscar centenas de ofertas direto da Shopee com vendas reais e links já afiliados:")
+        st.markdown("#### 🧡 API Oficial Shopee Afiliados (Recomendado — Gera Link `s.shopee.com.br` da SUA Conta)")
+        st.caption("Em [affiliate.shopee.com.br](https://affiliate.shopee.com.br) > **API Aberta**, copie seu App ID e Secret. Além de buscar mais vendidos direto da Shopee, **todos os links da Shopee serão convertidos automaticamente em links oficiais da sua conta (`generateShortLink`)**.")
         col_shp1, col_shp2 = st.columns(2)
         with col_shp1:
             shp_app_id = st.text_input("Shopee Open API App ID:", value=tags.get("shopee_app_id", ""), help="Ex: 18392019283")
@@ -959,7 +993,7 @@ with tab_settings:
         
         mode_idx = 0 if current_mode == "web" else (1 if current_mode == "app" else 2)
         selected_wa_mode = st.radio(
-            "Destino do Clique de Envio:",
+            "Destino do Clique de Envio (quando não usar API):",
             options=[
                 "🌐 WhatsApp Web Direto (web.whatsapp.com - Sem tela intermediária!) [RECOMENDADO]",
                 "💻 Aplicativo WhatsApp Desktop (Windows App nativo)",
@@ -970,14 +1004,14 @@ with tab_settings:
         mode_slug = "web" if "web.whatsapp.com" in selected_wa_mode else ("app" if "Desktop" in selected_wa_mode else "universal")
         
         wa_grp_link = st.text_input(
-            "Link de Convite do Grupo VIP deste Operador (aparece no rodapé das copies):",
+            "Link de Convite do Grupo VIP deste Operador (opcional, aparece no rodapé):",
             value=wa_cfg.get("group_link", ""),
             help="Ex: https://chat.whatsapp.com/..."
         )
         
         st.markdown("---")
-        st.markdown("### 🤖 Automação via API do WhatsApp (Opcional - Disparo 100% Silencioso)")
-        st.caption("Para quem usa Evolution API ou Z-API para postar com foto e legenda sem abrir abas:")
+        st.markdown("### 🤖 Envio Instantâneo Sem Abrir Novas Abas (WhatsApp API)")
+        st.caption("Conecte uma instância de WhatsApp via QR Code (Evolution API, Z-API ou Webhook). Com isso preenchido, o botão principal dos cards muda para **⚡ Enviar Agora (Sem Abrir Abas)** e dispara direto com foto + texto em menos de 1 segundo:")
         
         col_wa1, col_wa2 = st.columns(2)
         with col_wa1:
@@ -989,7 +1023,7 @@ with tab_settings:
             wa_endpoint = st.text_input(
                 "URL do Endpoint da API:",
                 value=wa_cfg.get("api_endpoint", wa_cfg.get("webhook_url", "")),
-                help="Ex: http://localhost:8080/message/sendMedia/instancia ou https://api.z-api.io/instances/.../token/.../send-image"
+                help="Ex: https://sua-api.com/message/sendMedia/instancia ou https://api.z-api.io/instances/.../token/.../send-image"
             )
             
         with col_wa2:
@@ -1016,6 +1050,14 @@ with tab_settings:
         submitted = st.form_submit_button(f"💾 Salvar Configurações no Perfil '{curr_prof}'", type="primary")
         
         if submitted:
+            merged_tags = dict(tags)
+            merged_tags.update({
+                "mercadolivre": ml.strip(),
+                "shopee": shp.strip(),
+                "shopee_app_id": shp_app_id.strip(),
+                "shopee_app_secret": shp_app_secret.strip(),
+                "shein": shn.strip(),
+            })
             new_conf = {
                 "instagram": {
                     "handle": ig_handle.strip(),
@@ -1031,18 +1073,7 @@ with tab_settings:
                     "group_link": wa_grp_link.strip(),
                     "webhook_url": wa_endpoint.strip()
                 },
-                "affiliate_tags": {
-                    "amazon": amz.strip(),
-                    "mercadolivre": ml.strip(),
-                    "shopee": shp.strip(),
-                    "shopee_app_id": shp_app_id.strip(),
-                    "shopee_app_secret": shp_app_secret.strip(),
-                    "magalu": mgl.strip(),
-                    "casasbahia": cb.strip(),
-                    "shein": shn.strip(),
-                    "aliexpress": ali.strip(),
-                    "dafiti": daf.strip()
-                }
+                "affiliate_tags": merged_tags,
             }
             if save_profile(curr_prof, new_conf):
                 st.success(f"✅ Configurações salvas com sucesso no perfil de **{curr_prof}**!")

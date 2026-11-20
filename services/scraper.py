@@ -169,16 +169,12 @@ ML_MV_SECTION_MAP = {
     "bebes": "👶 Bebês & Infantil",
 }
 
+ALLOWED_STORES = ("Mercado Livre", "Shopee", "Shein")
+
 PROMOBIT_STORE_SLUGS = {
-    "amazon": "amazon",
     "mercado": "mercado-livre",
     "shopee": "shopee",
     "shein": "shein",
-    "magalu": "magazine-luiza",
-    "magazine": "magazine-luiza",
-    "aliexpress": "aliexpress",
-    "casas": "casas-bahia",
-    "dafiti": "loja-dafiti",
 }
 
 SPAM_OFFER_PATTERNS = (
@@ -371,6 +367,9 @@ def compute_quality_score(deal: dict) -> float:
         score += 18.0
     if deal.get("image"):
         score += 8.0
+    url_low = (deal.get("url") or "").lower()
+    if url_low and "promobit.com" not in url_low:
+        score += 120.0
     return round(score, 2)
 
 
@@ -667,76 +666,95 @@ def fetch_mercadolivre_category(cat_slug: str) -> list:
 # 3. PECHINCHOU JSON API (MAIS VENDIDOS, CURTIDOS & URGENTES)
 # ==============================================================================
 
-def fetch_pechinchou_page(page_num: int = 1) -> list:
+def _parse_pechinchou_items(items: list) -> list:
     deals = []
+    for it in items:
+        title = (it.get("title") or "").strip()
+        p_raw = it.get("price")
+        try:
+            p_val = float(str(p_raw).replace(",", ".")) if p_raw else 0.0
+        except Exception:
+            p_val = robust_parse_money(str(p_raw or ""))
+        if not title or is_spam_offer(title, p_val):
+            continue
+
+        op_raw = it.get("old_price")
+        try:
+            op_val = float(str(op_raw).replace(",", ".")) if op_raw else None
+        except Exception:
+            op_val = robust_parse_money(str(op_raw or "")) or None
+        clean_p, clean_op, real_disc = validate_and_sanitize_prices(p_val, op_val)
+        if clean_p <= 0:
+            continue
+
+        store_obj = it.get("store") or {}
+        prod_url = it.get("long_url") or it.get("short_url") or ""
+        if not prod_url:
+            continue
+        store_name = normalize_store_name(store_obj.get("name", ""), prod_url)
+        if store_name not in ALLOWED_STORES:
+            continue
+
+        likes = _safe_count(it.get("likes"))
+        sales = _safe_count(it.get("total_sales"))
+        is_urgent = bool(it.get("urgent") or it.get("lowest_price"))
+        subcat = (it.get("subcategory") or {}).get("name", "") if isinstance(it.get("subcategory"), dict) else ""
+
+        parts = []
+        if is_urgent:
+            parts.append("⚡ Menor Preço / Relâmpago")
+        if sales >= 50:
+            parts.append(f"🔥 {sales} vendas")
+        elif likes >= 2:
+            parts.append(f"👍 {likes} curtidas")
+
+        deals.append(_finalize_deal({
+            "title": title,
+            "price": clean_p,
+            "price_str": f"R$ {clean_p:.2f}".replace(".", ","),
+            "old_price": clean_op,
+            "old_price_str": f"R$ {clean_op:.2f}".replace(".", ",") if clean_op else "",
+            "discount_pct": real_disc,
+            "store": store_name,
+            "url": prod_url,
+            "image": it.get("image") or "",
+            "coupon": it.get("discount_coupon") or None,
+            "category": subcat,
+            "source": "Pechinchou API",
+            "is_flash": is_urgent or real_disc >= 40,
+            "is_bestseller": sales >= 100 or likes >= 10,
+            "likes": likes,
+            "clicks": 0,
+            "sales_count": sales,
+            "sales_label": " • ".join(parts),
+            "rating": 4.7 if likes >= 5 else 0.0,
+        }))
+    return deals
+
+
+def fetch_pechinchou_page(page_num: int = 1) -> list:
     session = get_session()
     url = f"http://admin2.pechinchou.com.br/api/v2/produto/listar_produtos_em_destaque/home/?hide_closed=false&page={page_num}"
     try:
         r = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        if r.status_code != 200:
-            return deals
-        for it in r.json().get("results", []):
-            title = (it.get("title") or "").strip()
-            p_raw = it.get("price")
-            try:
-                p_val = float(str(p_raw).replace(",", ".")) if p_raw else 0.0
-            except Exception:
-                p_val = robust_parse_money(str(p_raw or ""))
-            if not title or is_spam_offer(title, p_val):
-                continue
-
-            op_raw = it.get("old_price")
-            try:
-                op_val = float(str(op_raw).replace(",", ".")) if op_raw else None
-            except Exception:
-                op_val = robust_parse_money(str(op_raw or "")) or None
-            clean_p, clean_op, real_disc = validate_and_sanitize_prices(p_val, op_val)
-            if clean_p <= 0:
-                continue
-
-            store_obj = it.get("store") or {}
-            store_name = normalize_store_name(store_obj.get("name", ""), it.get("long_url", ""))
-            prod_url = it.get("long_url") or it.get("short_url") or ""
-            if not prod_url:
-                continue
-
-            likes = _safe_count(it.get("likes"))
-            sales = _safe_count(it.get("total_sales"))
-            is_urgent = bool(it.get("urgent") or it.get("lowest_price"))
-            subcat = (it.get("subcategory") or {}).get("name", "") if isinstance(it.get("subcategory"), dict) else ""
-
-            parts = []
-            if is_urgent:
-                parts.append("⚡ Menor Preço / Relâmpago")
-            if sales >= 50:
-                parts.append(f"🔥 {sales} vendas")
-            elif likes >= 2:
-                parts.append(f"👍 {likes} curtidas")
-
-            deals.append(_finalize_deal({
-                "title": title,
-                "price": clean_p,
-                "price_str": f"R$ {clean_p:.2f}".replace(".", ","),
-                "old_price": clean_op,
-                "old_price_str": f"R$ {clean_op:.2f}".replace(".", ",") if clean_op else "",
-                "discount_pct": real_disc,
-                "store": store_name,
-                "url": prod_url,
-                "image": it.get("image") or "",
-                "coupon": it.get("discount_coupon") or None,
-                "category": subcat,
-                "source": "Pechinchou API",
-                "is_flash": is_urgent or real_disc >= 40,
-                "is_bestseller": sales >= 100 or likes >= 10,
-                "likes": likes,
-                "clicks": 0,
-                "sales_count": sales,
-                "sales_label": " • ".join(parts),
-                "rating": 4.7 if likes >= 5 else 0.0,
-            }))
+        if r.status_code == 200:
+            return _parse_pechinchou_items(r.json().get("results", []))
     except Exception:
         pass
-    return deals
+    return []
+
+
+def fetch_pechinchou_catalog(page_num: int = 1) -> list:
+    """Busca no catálogo completo da Pechinchou API (links diretos / meli.la sem Promobit)."""
+    session = get_session()
+    url = f"http://admin2.pechinchou.com.br/api/v2/produto/?page={page_num}"
+    try:
+        r = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        if r.status_code == 200:
+            return _parse_pechinchou_items(r.json().get("results", []))
+    except Exception:
+        pass
+    return []
 
 
 # ==============================================================================
@@ -1107,30 +1125,30 @@ def search_deals(
                 for skw in niche_cfg.get("shopee_kws", [""]):
                     tasks.append(executor.submit(fetch_shopee_open_api, shp_id, shp_secret, skw, 2, 50))
 
-        # 1. Busca específica por Palavra-Chave digitada pelo usuário
+        # 1. Busca específica por Palavra-Chave digitada pelo usuário (Somente ML, Shopee e Shein)
         if kw_clean:
             tasks.append(executor.submit(fetch_promobit_search_api, kw_clean))
             tasks.append(executor.submit(fetch_pelando_feed, f"/busca/{kw_clean.replace(' ', '%20')}"))
-            if not stores or any("amazon" in s.lower() for s in stores):
-                tasks.append(executor.submit(fetch_amazon_direct, kw_clean, min_discount, 20))
             if not stores or any("mercado" in s.lower() for s in stores):
                 tasks.append(executor.submit(fetch_mercadolivre_mais_vendidos, "Todos os Nichos"))
                 for ml_cat in niche_cfg.get("ml_cats", [])[:2]:
                     tasks.append(executor.submit(fetch_mercadolivre_category, ml_cat))
+                tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 2))
             if not stores or any("shopee" in s.lower() for s in stores):
-                tasks.append(executor.submit(fetch_promobit_store_api, "shopee", 2))
+                tasks.append(executor.submit(fetch_promobit_store_api, "shopee", 3))
+                tasks.append(executor.submit(fetch_promobit_search_api, f"shopee {kw_clean}"))
             if not stores or any("shein" in s.lower() for s in stores):
                 tasks.append(executor.submit(fetch_promobit_store_api, "shein", 2))
+                tasks.append(executor.submit(fetch_promobit_search_api, f"shein {kw_clean}"))
             for p in range(1, 3):
                 tasks.append(executor.submit(fetch_pechinchou_page, p))
 
-        # 2. Busca por Lojas Específicas (ou Modo Viral / Todas as Lojas)
+        # 2. Busca por Lojas Específicas (Somente ML, Shopee e Shein)
         elif stores:
             for s in stores:
                 sl = s.lower()
                 if "shopee" in sl:
-                    # 4 páginas da loja Shopee no Promobit (até 200 ofertas reais Shopee) + Pelando + Busca de nicho
-                    tasks.append(executor.submit(fetch_promobit_store_api, "shopee", 4))
+                    tasks.append(executor.submit(fetch_promobit_store_api, "shopee", 5))
                     tasks.append(executor.submit(fetch_pelando_feed, "/busca/shopee"))
                     tasks.append(executor.submit(fetch_pelando_feed, "/busca/shopee?page=2"))
                     tasks.append(executor.submit(fetch_pechinchou_page, 1))
@@ -1141,7 +1159,6 @@ def search_deals(
                         for tok in niche_tokens[:2]:
                             tasks.append(executor.submit(fetch_pelando_feed, f"/busca/shopee%20{tok}"))
                 elif "mercado" in sl:
-                    # Direto do Mercado Livre (/mais-vendidos + categoria /c/ do nicho) + Promobit ML + Pechinchou
                     tasks.append(executor.submit(fetch_mercadolivre_mais_vendidos, effective_niche))
                     ml_limit = 2 if effective_niche != "Todos os Nichos" else 1
                     for ml_cat in niche_cfg.get("ml_cats", [])[:ml_limit]:
@@ -1149,9 +1166,10 @@ def search_deals(
                     tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 3))
                     for p in range(1, 3):
                         tasks.append(executor.submit(fetch_pechinchou_page, p))
+                    for p in range(1, 5):
+                        tasks.append(executor.submit(fetch_pechinchou_catalog, p))
                 elif "shein" in sl:
-                    # Promobit Shein + Busca Shein + Pelando Shein
-                    tasks.append(executor.submit(fetch_promobit_store_api, "shein", 2))
+                    tasks.append(executor.submit(fetch_promobit_store_api, "shein", 4))
                     tasks.append(executor.submit(fetch_promobit_search_api, "shein"))
                     tasks.append(executor.submit(fetch_pelando_feed, "/busca/shein"))
                     tasks.append(executor.submit(fetch_pelando_feed, "/busca/shein?page=2"))
@@ -1159,38 +1177,29 @@ def search_deals(
                         shein_tokens = [tok for skw in niche_cfg.get("shopee_kws", []) for tok in skw.split()][:3]
                         for tok in shein_tokens:
                             tasks.append(executor.submit(fetch_promobit_search_api, f"shein {tok}"))
-                elif "amazon" in sl:
-                    for amz_cat in niche_cfg.get("amz_cats", ["beauty"])[:2]:
-                        tasks.append(executor.submit(fetch_amazon_bestsellers, amz_cat))
-                    tasks.append(executor.submit(fetch_amazon_direct, "ofertas", min_discount, 20))
-                    tasks.append(executor.submit(fetch_promobit_store_api, "amazon", 2))
-                    for p in range(1, 3):
-                        tasks.append(executor.submit(fetch_pechinchou_page, p))
-                else:
-                    slug = next((v for k, v in PROMOBIT_STORE_SLUGS.items() if k in sl), None)
-                    if slug:
-                        tasks.append(executor.submit(fetch_promobit_store_api, slug, 2))
-                    tasks.append(executor.submit(fetch_pelando_feed, f"/busca/{sl.replace(' ', '%20')}"))
 
-        # 3. Modo Viral ou "Todas as Lojas" (Mix completo de alta qualidade e volume em < 8s)
+        # 3. Modo Viral ou "Todas as Lojas" (100% focado em Mercado Livre, Shopee e Shein)
         else:
-            shopee_pages = 2 if effective_niche == "Todos os Nichos" else 3
+            shopee_pages = 3 if effective_niche == "Todos os Nichos" else 4
             tasks.append(executor.submit(fetch_promobit_store_api, "shopee", shopee_pages))
             tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 2))
-            tasks.append(executor.submit(fetch_promobit_store_api, "shein", 1))
-            tasks.append(executor.submit(fetch_promobit_store_api, "amazon", 1))
+            tasks.append(executor.submit(fetch_promobit_store_api, "shein", 2))
             tasks.append(executor.submit(fetch_mercadolivre_mais_vendidos, effective_niche))
+            tasks.append(executor.submit(fetch_pelando_feed, "/busca/shopee"))
+            tasks.append(executor.submit(fetch_pelando_feed, "/busca/shein"))
             if effective_niche != "Todos os Nichos":
                 for ml_cat in niche_cfg.get("ml_cats", [])[:1]:
                     tasks.append(executor.submit(fetch_mercadolivre_category, ml_cat))
                 for skw in niche_cfg.get("shopee_kws", [])[:1]:
-                    tasks.append(executor.submit(fetch_promobit_search_api, skw.split()[0]))
+                    tok = skw.split()[0]
+                    tasks.append(executor.submit(fetch_promobit_search_api, f"shopee {tok}"))
+                    tasks.append(executor.submit(fetch_promobit_search_api, f"shein {tok}"))
             for pel_cat in niche_cfg.get("pelando_cats", ["recentes"])[:2]:
                 tasks.append(executor.submit(fetch_pelando_feed, f"/c/{pel_cat}" if pel_cat != "recentes" else "/recentes"))
-            for amz_cat in niche_cfg.get("amz_cats", ["beauty"])[:1]:
-                tasks.append(executor.submit(fetch_amazon_bestsellers, amz_cat))
             for p in range(1, 3):
                 tasks.append(executor.submit(fetch_pechinchou_page, p))
+            for p in range(1, 5):
+                tasks.append(executor.submit(fetch_pechinchou_catalog, p))
 
         for f in as_completed(tasks):
             try:
@@ -1206,6 +1215,12 @@ def search_deals(
     kw_tokens = [tok.rstrip("s") if len(tok) > 4 else tok for tok in kw_norm.split()]
 
     for d in raw_deals:
+        # 0. Restringir estritamente às 3 lojas autorizadas: Mercado Livre, Shopee e Shein
+        if d.get("store") not in ALLOWED_STORES:
+            continue
+        if "/messenger/" in (d.get("url") or "").lower():
+            continue
+
         norm_title = strip_accents(d["title"])
         dedup_key = re.sub(r"[^a-z0-9]", "", norm_title[:30])
         if not dedup_key or dedup_key in seen_titles:

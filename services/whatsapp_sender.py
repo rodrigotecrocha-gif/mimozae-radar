@@ -107,7 +107,13 @@ def generate_batch_super_message(deals: list, config: dict) -> str:
         store = d.get("store", "Loja Oficial")
         coupon = d.get("coupon")
         
-        aff_res = convert_to_affiliate(d.get("url", ""), store, config)
+        aff_res = convert_to_affiliate(
+            d.get("url", ""),
+            store,
+            config,
+            resolve_redirects=True,
+            is_own_shopee_api_link=(d.get("source") == "Shopee API Oficial"),
+        )
         link = aff_res["url"]
         
         disc_txt = f" (-{disc}% OFF)" if disc else ""
@@ -118,14 +124,12 @@ def generate_batch_super_message(deals: list, config: dict) -> str:
         else:
             lines.append(f"🔥 *Por: {price}*{disc_txt}")
             
-        lines.append(f"🏬 Loja: {store}")
         if coupon:
             lines.append(f"🎟️ Cupom: *{coupon}*")
         lines.append(f"🛒 *Link Seguro:* {link}")
         lines.append("")
         
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ _Atenção: Os preços e estoques podem esgotar rapidamente!_")
     if group_link:
         lines.append(f"👥 _Entre no nosso Grupo VIP de Achadinhos:_ {group_link}")
         

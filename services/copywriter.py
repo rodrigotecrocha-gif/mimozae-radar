@@ -29,17 +29,13 @@ def generate_whatsapp_copy(item: dict, affiliate_url: str, custom_group_link: st
     else:
         lines.append(f"🔥 *Por apenas: {price}*{discount_txt}")
         
-    lines.append("")
-    lines.append(f"🏬 Loja: *{store}*")
-    
     if coupon:
+        lines.append("")
         lines.append(f"🎟️ Cupom: *{coupon}*")
         
     lines.append("")
     lines.append("🛒 *Compre com desconto pelo link seguro:*")
     lines.append(f"👉 {affiliate_url}")
-    lines.append("")
-    lines.append("⚠️ _Preço e estoque sujeitos a alteração a qualquer momento!_")
     
     if custom_group_link:
         lines.append("")
@@ -81,8 +77,6 @@ def generate_instagram_caption(item: dict, affiliate_url: str, config: dict) -> 
     else:
         lines.append(f"🔥 Por apenas {price}! 😱" + (f" (-{discount_pct}% OFF)" if discount_pct else ""))
         
-    lines.append(f"📍 Disponível na {store}")
-    
     if coupon:
         lines.append(f"🎟️ Use o cupom: {coupon}")
         
@@ -94,7 +88,7 @@ def generate_instagram_caption(item: dict, affiliate_url: str, config: dict) -> 
     lines.append("")
     
     title_lower = title.lower() + " " + category.lower()
-    custom_tags = ["#achadinhos", "#promocao", "#ofertas", "#desconto", "#comprinhas", "#mimozae", "#achadosshopee", "#achadosamazon", "#tiktokmademebuyit"]
+    custom_tags = ["#achadinhos", "#promocao", "#ofertas", "#desconto", "#comprinhas", "#mimozae", "#achadosshopee", "#achadosmercadolivre", "#achadosshein", "#tiktokmademebuyit"]
     
     if any(k in title_lower for k in ["beleza", "cabelo", "pele", "óleo", "creme", "maquiagem", "perfume", "lola", "cerave"]):
         custom_tags.extend(["#skincarebrasil", "#dicasdebeleza", "#cabelossaudaveis", "#autocuidado", "#beleza"])
