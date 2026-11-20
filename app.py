@@ -1,7 +1,40 @@
-import streamlit as st
+import importlib
 import io
+import os
+import sys
 import time
+import streamlit as st
 from PIL import Image
+
+
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+
+
+def _ensure_fresh_module(mod_name: str):
+    """Recarrega módulos locais apenas se foram atualizados em disco (evita erro de hot-reload no Streamlit Cloud)."""
+    already_loaded = mod_name in sys.modules
+    mod = importlib.import_module(mod_name)
+    mod_file = getattr(mod, "__file__", "")
+    if mod_file and os.path.exists(mod_file):
+        mtime = os.path.getmtime(mod_file)
+        prev = getattr(mod, "__loaded_mtime__", None)
+        if (already_loaded and prev is None) or (prev is not None and prev != mtime):
+            mod = importlib.reload(mod)
+        setattr(mod, "__loaded_mtime__", mtime)
+    return mod
+
+
+for _m in (
+    "config",
+    "services.scraper",
+    "services.affiliate",
+    "services.copywriter",
+    "services.image_generator",
+    "services.whatsapp_sender",
+):
+    _ensure_fresh_module(_m)
 
 from config import load_config, save_config, load_full_config, get_profile, save_profile, create_new_profile
 from services.scraper import search_deals, analyze_single_url, sanitize_img_url, NICHES, VIRAL_CATALOG
