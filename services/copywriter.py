@@ -17,9 +17,6 @@ def generate_whatsapp_copy(item: dict, affiliate_url: str, custom_group_link: st
         header,
         ""
     ]
-    if is_viral:
-        lines.append("⚡ _O queridinho do TikTok / Reels com super desconto:_")
-        
     lines.append(f"📦 *{title}*")
     lines.append("")
     

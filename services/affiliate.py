@@ -1,6 +1,7 @@
 import hashlib
 import html as html_lib
 import json
+import os
 import re
 import threading
 import time
@@ -14,7 +15,34 @@ from bs4 import BeautifulSoup
 _PROMOBIT_LOCK = threading.Lock()
 _PROMOBIT_COOLDOWN_UNTIL = 0.0
 _RESOLVED_URL_CACHE = {}
+_DISK_CACHE_LOADED = False
 _CACHE_LOCK = threading.Lock()
+_DISK_CACHE_PATH = os.path.join(os.path.expanduser("~"), ".mimozae_radar", "resolved_links.json")
+
+
+def _ensure_disk_cache_loaded():
+    global _DISK_CACHE_LOADED
+    if _DISK_CACHE_LOADED:
+        return
+    _DISK_CACHE_LOADED = True
+    try:
+        if os.path.exists(_DISK_CACHE_PATH):
+            with open(_DISK_CACHE_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                _RESOLVED_URL_CACHE.update(saved)
+    except Exception:
+        pass
+
+
+def _save_disk_cache():
+    try:
+        os.makedirs(os.path.dirname(_DISK_CACHE_PATH), exist_ok=True)
+        trimmed = dict(list(_RESOLVED_URL_CACHE.items())[-3000:])
+        with open(_DISK_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(trimmed, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 _AFF_SESSION = None
 _DEFAULT_HEADERS = {
@@ -138,6 +166,7 @@ def resolve_unshorten_url(url: str, max_depth: int = 5) -> str:
         return ""
 
     with _CACHE_LOCK:
+        _ensure_disk_cache_loaded()
         if url in _RESOLVED_URL_CACHE:
             return _RESOLVED_URL_CACHE[url]
 
@@ -246,6 +275,8 @@ def resolve_unshorten_url(url: str, max_depth: int = 5) -> str:
             if len(_RESOLVED_URL_CACHE) > 4096:
                 _RESOLVED_URL_CACHE.clear()
             _RESOLVED_URL_CACHE[url] = final
+            if "promobit.com" in url.lower() or "meli.la" in url.lower() or "s.shopee" in url.lower():
+                _save_disk_cache()
     return final
 
 
@@ -356,11 +387,23 @@ def _needs_resolution(url: str) -> bool:
     return any(dom in low for dom in REDIRECT_DOMAINS) or "/social/" in low
 
 
-def resolve_deals_links_batch(deals: list, max_workers: int = 12, max_promobit: int = 6) -> list:
-    """Resolve URLs diretas/encurtadas em paralelo e faz extração suave no Promobit sem estourar rate limit."""
+def resolve_deals_links_batch(deals: list, max_workers: int = 12, max_promobit: int = 15) -> list:
+    """Resolve URLs diretas/encurtadas em paralelo e extrai links do Promobit com cache persistente."""
+    with _CACHE_LOCK:
+        _ensure_disk_cache_loaded()
+
     pending = [d for d in deals if _needs_resolution(d.get("url", "")) and not d.get("_url_resolved")]
-    fast_list = [d for d in pending if "promobit.com" not in (d.get("url") or "").lower()]
-    promobit_list = [d for d in pending if "promobit.com" in (d.get("url") or "").lower()]
+    fast_list = []
+    promobit_list = []
+    for d in pending:
+        raw_u = d.get("url", "")
+        if "promobit.com" in raw_u.lower():
+            if raw_u in _RESOLVED_URL_CACHE:
+                fast_list.append(d)
+            else:
+                promobit_list.append(d)
+        else:
+            fast_list.append(d)
 
     def _resolve_one(deal: dict):
         raw_u = deal.get("url", "")
@@ -376,7 +419,7 @@ def resolve_deals_links_batch(deals: list, max_workers: int = 12, max_promobit: 
         with ThreadPoolExecutor(max_workers=min(max_workers, len(fast_list))) as ex:
             list(ex.map(_resolve_one, fast_list))
 
-    # Promobit limita bursts paralelos (429); resolve suavemente e para imediatamente em caso de cooldown
+    # Promobit limita bursts paralelos (429); resolve suavemente novos links e para em caso de cooldown
     resolved_pb = 0
     for d in promobit_list:
         if resolved_pb >= max_promobit or time.time() < _PROMOBIT_COOLDOWN_UNTIL:

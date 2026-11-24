@@ -36,12 +36,21 @@ for _m in (
 ):
     _ensure_fresh_module(_m)
 
-from config import load_config, save_config, load_full_config, get_profile, save_profile, create_new_profile
-from services.scraper import search_deals, analyze_single_url, sanitize_img_url, NICHES, VIRAL_CATALOG
+from config import (
+    load_config,
+    save_config,
+    load_full_config,
+    save_full_config,
+    get_profile,
+    save_profile,
+    create_new_profile,
+    generate_secrets_toml,
+)
+from services.scraper import search_deals, analyze_single_url, sanitize_img_url, build_store_comparison, NICHES, VIRAL_CATALOG
 from services.affiliate import convert_to_affiliate, identify_store, clean_product_url, resolve_deals_links_batch
 from services.copywriter import generate_whatsapp_copy, generate_instagram_caption
 from services.image_generator import generate_social_image, THEMES
-from services.whatsapp_sender import generate_wa_link, send_whatsapp_media_api, generate_batch_super_message
+from services.whatsapp_sender import generate_wa_link, send_whatsapp_media_api, generate_batch_super_message, download_jpeg_bytes_cached
 
 def render_deal_image(img_source, caption=None, width=None, use_container_width=True):
     """Renderiza imagem com proteção completa contra MediaFileStorageError, URLs relativas ou falhas de rede."""
@@ -395,10 +404,15 @@ tab_radar, tab_analyzer, tab_studio, tab_settings = st.tabs([
 with tab_radar:
     mode_selection = st.radio(
         "Modo de Operação:",
-        options=["✨ Achadinhos Virais (Moda, Beleza, Casa & Gadgets)", "🔍 Busca Manual / Filtro por Lojas"],
+        options=[
+            "✨ Achadinhos Virais",
+            "🔎 Buscar Produto & Comparar (ML × Shopee × Shein)",
+            "🏬 Filtrar por Loja & Nicho",
+        ],
         horizontal=True
     )
-    is_viral_mode = "Achadinhos Virais" in mode_selection
+    is_viral_mode = mode_selection.startswith("✨")
+    is_compare_mode = mode_selection.startswith("🔎")
     
     with st.container(border=True):
         if is_viral_mode:
@@ -426,6 +440,33 @@ with tab_radar:
             niche_param = "Todos os Nichos"
             search_term_param = ""
             actual_cat_param = "" if "Todos" in viral_cat else viral_cat
+            price_limit = 10000
+
+        elif is_compare_mode:
+            st.markdown("### 🔎 Buscar Produto Específico & Comparar Preços")
+            st.caption("Digite o nome ou palavra-chave de um produto para buscar correspondências simultaneamente no **Mercado Livre**, **Shopee** e **Shein** e comparar preços:")
+            c_s1, c_s2, c_s3 = st.columns([2.2, 1.1, 1.1])
+            with c_s1:
+                search_term_param = st.text_input(
+                    "Nome ou Palavra-Chave do Produto:",
+                    placeholder="Ex: fone bluetooth, airfryer, vestido, creatina, bolsa...",
+                    key="compare_kw_input",
+                )
+            with c_s2:
+                viral_discount = st.select_slider(
+                    "Desconto Mínimo:",
+                    options=[0, 15, 25, 35, 50],
+                    value=0,
+                    format_func=lambda x: "Qualquer %" if x == 0 else f"{x}%+ OFF",
+                    key="cmp_disc",
+                )
+            with c_s3:
+                st.write("")
+                btn_search = st.button("🔎 Buscar & Comparar", type="primary", use_container_width=True)
+
+            selected_stores_param = ("Todas as Lojas",)
+            niche_param = "Todos os Nichos"
+            actual_cat_param = ""
             price_limit = 10000
             
         else:
@@ -477,8 +518,8 @@ with tab_radar:
                 
             actual_cat_param = ""
 
-        # Critérios de Qualidade e Ordenação (Vendas, Avaliações, Oferta Relâmpago, Desconto)
-        q_c1, q_c2, q_c3 = st.columns([1.8, 1.1, 1.1])
+        # Critérios de Qualidade e Link Hygiene
+        q_c1, q_c2, q_c3, q_c4 = st.columns([1.6, 1.0, 1.0, 1.1])
         with q_c1:
             sort_choice = st.selectbox(
                 "Ordenar por Qualidade:",
@@ -502,6 +543,9 @@ with tab_radar:
         with q_c3:
             st.write("")
             only_discounted = st.checkbox("💥 Só c/ Desconto Real", value=False, key="chk_only_disc")
+        with q_c4:
+            st.write("")
+            hide_promobit = st.checkbox("🚫 Ocultar Links Promobit", value=True, key="chk_hide_promobit", help="Oculta automaticamente itens que não puderam ser convertidos para link direto da loja")
             
     # Execução Paralela Rápida com Atualização Automática nos Filtros
     current_kw = search_term_param.strip() if not is_viral_mode else ""
@@ -513,9 +557,10 @@ with tab_radar:
         selected_stores_param,
         niche_param,
         viral_discount,
-        10000 if is_viral_mode else price_limit,
+        10000 if (is_viral_mode or is_compare_mode) else price_limit,
         current_kw,
         is_viral_mode,
+        is_compare_mode,
         actual_cat_param,
         only_flash,
         only_discounted,
@@ -523,45 +568,93 @@ with tab_radar:
         shopee_creds_tuple,
     )
     
-    should_search = btn_search or (query_sig != st.session_state.last_query_sig) or (len(st.session_state.deals_list) == 0)
-    
-    if should_search:
-        st.session_state.last_query_sig = query_sig
-        st.session_state.display_limit = 30
-        t_start = time.time()
-        with st.spinner("⚡ Varrendo catálogos reais das lojas e pré-selecionando as melhores ofertas..."):
-            found = get_cached_deals(
-                stores_tuple=selected_stores_param,
-                niche=niche_param,
-                min_discount=viral_discount,
-                price_max=10000 if is_viral_mode else price_limit,
-                keyword=current_kw,
-                viral_mode=is_viral_mode,
-                viral_cat=actual_cat_param,
-                only_flash=only_flash,
-                only_discounted=only_discounted,
-                sort_by=sort_slug,
-                shopee_creds_tuple=shopee_creds_tuple,
-            )
-            st.session_state.deals_list = found
-            st.session_state.last_search_time = time.time() - t_start
-            st.session_state.selected_indices = set()
-            
-    deals = st.session_state.deals_list
+    if is_compare_mode and not current_kw:
+        st.info("🔎 Digite o nome ou palavra-chave de um produto acima (ex.: `airfryer`, `fone bluetooth`, `vestido`) para comparar correspondências entre **Mercado Livre**, **Shopee** e **Shein**.")
+        deals = []
+    else:
+        should_search = btn_search or (query_sig != st.session_state.last_query_sig) or (len(st.session_state.deals_list) == 0)
+        
+        if should_search:
+            st.session_state.last_query_sig = query_sig
+            st.session_state.display_limit = 30
+            t_start = time.time()
+            with st.spinner("⚡ Varrendo catálogos reais das lojas e comparando correspondências..."):
+                found = get_cached_deals(
+                    stores_tuple=selected_stores_param,
+                    niche=niche_param,
+                    min_discount=viral_discount,
+                    price_max=10000 if (is_viral_mode or is_compare_mode) else price_limit,
+                    keyword=current_kw,
+                    viral_mode=is_viral_mode,
+                    viral_cat=actual_cat_param,
+                    only_flash=only_flash,
+                    only_discounted=only_discounted,
+                    sort_by=sort_slug,
+                    shopee_creds_tuple=shopee_creds_tuple,
+                )
+                st.session_state.deals_list = found
+                st.session_state.last_search_time = time.time() - t_start
+                st.session_state.selected_indices = set()
+                
+        deals = st.session_state.deals_list
     
     if deals:
+        # Resolve redirecionadores de um lote suficiente para preencher a exibição com links diretos reais
+        scan_slice = deals[:max(st.session_state.display_limit + 60, 120)]
+        resolve_deals_links_batch(scan_slice, max_promobit=15)
+        deals = [d for d in deals if not d.get("_invalid_link")]
+        hidden_pb_count = 0
+        if hide_promobit:
+            clean_only = [d for d in deals if "promobit.com" not in (d.get("url") or "").lower()]
+            hidden_pb_count = len(deals) - len(clean_only)
+            deals = clean_only
+        st.session_state.deals_list = [d for d in st.session_state.deals_list if not d.get("_invalid_link")]
+
         visible_deals = deals[:st.session_state.display_limit]
-        resolved_visible = resolve_deals_links_batch(visible_deals)
-        if len(resolved_visible) < len(visible_deals):
-            deals = [d for d in deals if not d.get("_invalid_link")]
-            st.session_state.deals_list = deals
-            visible_deals = deals[:st.session_state.display_limit]
         for d in visible_deals:
             if d.get("image") and not str(d["image"]).startswith("http"):
                 d["image"] = sanitize_img_url(d["image"], d.get("store", ""))
                 
         speed_msg = f"⚡ Busca realizada em **{st.session_state.last_search_time:.2f}s**!" if st.session_state.last_search_time > 0 else ""
-        st.success(f"✨ Encontradas **{len(deals)}** promoções qualificadas no radar! (Exibindo Top **{len(visible_deals)}**) {speed_msg}")
+        st.success(f"✨ Encontradas **{len(deals)}** promoções com link direto das lojas! (Exibindo Top **{len(visible_deals)}**) {speed_msg}")
+        if hidden_pb_count > 0:
+            st.caption(f"🛡️ {hidden_pb_count} ofertas que ainda dependiam de redirecionador do Promobit foram ocultadas automaticamente (desmarque *'🚫 Ocultar Links Promobit'* se desejar exibi-las, ou cadastre sua **Shopee Open API** na Aba 4).")
+
+        # ========================================================
+        # QUADRO DE COMPARAÇÃO ENTRE LOJAS QUANDO BUSCA POR NOME
+        # ========================================================
+        if current_kw:
+            cmp = build_store_comparison(deals, current_kw)
+            st.markdown(f"#### 📊 Comparação para **`{current_kw}`** nos sites cadastrados:")
+            all_best = [(st_name, info["best_deal"]) for st_name, info in cmp.items() if info["best_deal"] and (info["best_deal"].get("price") or 0) > 0]
+            if all_best:
+                win_store, win_deal = min(all_best, key=lambda x: x[1]["price"])
+                st.info(f"🏆 **Menor preço encontrado:** **{win_deal['price_str']}** na **{win_store}** — *{win_deal['title'][:70]}*")
+
+            cmp_cols = st.columns(3)
+            store_icons = {"Mercado Livre": "🤝", "Shopee": "🧡", "Shein": "👗"}
+            for c_idx, st_name in enumerate(("Mercado Livre", "Shopee", "Shein")):
+                info = cmp[st_name]
+                with cmp_cols[c_idx]:
+                    with st.container(border=True):
+                        st.markdown(f"**{store_icons[st_name]} {st_name}**")
+                        if info["count"] > 0 and info["best_deal"]:
+                            bd = info["best_deal"]
+                            bd_aff = convert_to_affiliate(
+                                bd.get("url", ""),
+                                st_name,
+                                config,
+                                resolve_redirects=True,
+                                is_own_shopee_api_link=(bd.get("source") == "Shopee API Oficial"),
+                            )
+                            st.markdown(f"**{info['count']}** correspondências | Menor: **{bd['price_str']}**")
+                            if info["max_discount"] > 0:
+                                st.caption(f"Maior desconto nesta busca: -{info['max_discount']}% OFF")
+                            st.caption(bd["title"][:65])
+                            st.link_button(f"🛒 Ver na {st_name}", bd_aff["url"], use_container_width=True)
+                        else:
+                            st.caption("Nenhuma correspondência direta no momento.")
+                        st.link_button(f"🔎 Pesquisar '{current_kw[:18]}' na loja", info["store_search_url"], use_container_width=True)
         
         # ========================================================
         # BARRA DE DISPARO EM LOTE (ATÉ 10 OFERTAS COM 1 CLIQUE)
@@ -789,10 +882,26 @@ with tab_radar:
                                 ig_caption = generate_instagram_caption(deal, final_aff_link, config)
                                 st.text_area("Legenda pronta:", ig_caption, height=110, key=f"cap_{idx}")
                                 
-                            with st.expander("🔗 Link de Afiliado & Copiar Mensagem"):
+                            with st.expander("🔗 Link de Afiliado, Foto & Copiar Mensagem"):
                                 st.text_input("Link Oficial (Seu Afiliado):", value=final_aff_link, key=f"link_{idx}")
                                 st.text_input("Link Direto do Produto (Limpo):", value=aff_res.get("clean_url", deal.get("url", "")), key=f"clean_link_{idx}")
                                 st.caption(f"Status: *{aff_res['status']}*")
+                                if clean_img:
+                                    if st.button("🖼️ Preparar Foto JPG (para WhatsApp)", key=f"prep_jpg_{idx}", use_container_width=True):
+                                        jpg_bytes = download_jpeg_bytes_cached(clean_img)
+                                        if jpg_bytes:
+                                            st.session_state[f"jpg_bytes_{idx}"] = jpg_bytes
+                                        else:
+                                            st.warning("Não foi possível converter esta imagem agora.")
+                                    if st.session_state.get(f"jpg_bytes_{idx}"):
+                                        st.download_button(
+                                            "⬇️ Baixar Foto JPG Agora",
+                                            data=st.session_state[f"jpg_bytes_{idx}"],
+                                            file_name=f"mimozae_produto_{idx}.jpg",
+                                            mime="image/jpeg",
+                                            key=f"dl_jpg_{idx}",
+                                            use_container_width=True,
+                                        )
                                 if has_wa_api:
                                     st.link_button("📲 Abrir no WhatsApp Web (opcional)", wa_direct_link, use_container_width=True)
                                 st.caption("📋 Clique no ícone à direita para copiar sem abrir nova aba:")
@@ -804,8 +913,8 @@ with tab_radar:
             if st.button(f"➕ Carregar +30 Ofertas ({rem} restantes no radar)", type="secondary", use_container_width=True):
                 st.session_state.display_limit += 30
                 st.rerun()
-    else:
-        st.info("💡 Nenhuma promoção encontrada para esta combinação exata de filtros. Tente reduzir o desconto mínimo, desmarcar um filtro ou selecionar 'Todas as Lojas'.")
+    elif not (is_compare_mode and not current_kw):
+        st.info("💡 Nenhuma promoção com link direto encontrada para esses filtros. Tente outro termo, reduza o desconto mínimo ou desmarque *'🚫 Ocultar Links Promobit'*.")
 
 
 # ==========================================
@@ -997,25 +1106,25 @@ with tab_settings:
                     time.sleep(1)
                     st.rerun()
                     
-    with st.form("settings_form"):
+    with st.form(f"settings_form_{curr_prof}"):
         st.markdown(f"### 🛒 Afiliados Ativos (Mercado Livre, Shopee & Shein) — {curr_prof}")
         tags = config.get("affiliate_tags", {})
         
         col_tag1, col_tag2, col_tag3 = st.columns(3)
         with col_tag1:
-            ml = st.text_input("Mercado Livre (Matt Tool ID):", value=tags.get("mercadolivre", ""), help="Ex: seu código numérico matt_tool do portal de afiliados ML")
+            ml = st.text_input("Mercado Livre (Matt Tool ID):", value=tags.get("mercadolivre", ""), key=f"cfg_ml_{curr_prof}", help="Ex: seu código numérico matt_tool do portal de afiliados ML")
         with col_tag2:
-            shp = st.text_input("Shopee (ID an_... ou Sub_ID):", value=tags.get("shopee", ""), help="Ex: an_18303210286 ou Sub_ID personalizado")
+            shp = st.text_input("Shopee (ID an_... ou Sub_ID):", value=tags.get("shopee", ""), key=f"cfg_shp_{curr_prof}", help="Ex: an_18303210286 ou Sub_ID personalizado")
         with col_tag3:
-            shn = st.text_input("Shein (Affiliate Tag / ID):", value=tags.get("shein", ""), help="Ex: seu aff_id ou parâmetro de afiliado Shein")
+            shn = st.text_input("Shein (Affiliate Tag / ID):", value=tags.get("shein", ""), key=f"cfg_shn_{curr_prof}", help="Ex: seu aff_id ou parâmetro de afiliado Shein")
 
         st.markdown("#### 🧡 API Oficial Shopee Afiliados (Recomendado — Gera Link `s.shopee.com.br` da SUA Conta)")
         st.caption("Em [affiliate.shopee.com.br](https://affiliate.shopee.com.br) > **API Aberta**, copie seu App ID e Secret. Além de buscar mais vendidos direto da Shopee, **todos os links da Shopee serão convertidos automaticamente em links oficiais da sua conta (`generateShortLink`)**.")
         col_shp1, col_shp2 = st.columns(2)
         with col_shp1:
-            shp_app_id = st.text_input("Shopee Open API App ID:", value=tags.get("shopee_app_id", ""), help="Ex: 18392019283")
+            shp_app_id = st.text_input("Shopee Open API App ID:", value=tags.get("shopee_app_id", ""), key=f"cfg_shp_id_{curr_prof}", help="Ex: 18392019283")
         with col_shp2:
-            shp_app_secret = st.text_input("Shopee Open API Secret Key:", value=tags.get("shopee_app_secret", ""), type="password")
+            shp_app_secret = st.text_input("Shopee Open API Secret Key:", value=tags.get("shopee_app_secret", ""), type="password", key=f"cfg_shp_sec_{curr_prof}")
             
         st.markdown("---")
         st.markdown(f"### 📲 Configurações do WhatsApp — {curr_prof}")
@@ -1032,13 +1141,15 @@ with tab_settings:
                 "💻 Aplicativo WhatsApp Desktop (Windows App nativo)",
                 "📱 WhatsApp Universal (api.whatsapp.com)"
             ],
-            index=mode_idx
+            index=mode_idx,
+            key=f"cfg_wa_mode_{curr_prof}",
         )
         mode_slug = "web" if "web.whatsapp.com" in selected_wa_mode else ("app" if "Desktop" in selected_wa_mode else "universal")
         
         wa_grp_link = st.text_input(
             "Link de Convite do Grupo VIP deste Operador (opcional, aparece no rodapé):",
             value=wa_cfg.get("group_link", ""),
+            key=f"cfg_wa_grp_{curr_prof}",
             help="Ex: https://chat.whatsapp.com/..."
         )
         
@@ -1051,11 +1162,13 @@ with tab_settings:
             wa_api_type = st.selectbox(
                 "Tipo de Integração / API:",
                 options=["Evolution API (v1 / v2)", "Z-API", "Webhook Genérico"],
-                index=0
+                index=0,
+                key=f"cfg_wa_type_{curr_prof}",
             )
             wa_endpoint = st.text_input(
                 "URL do Endpoint da API:",
                 value=wa_cfg.get("api_endpoint", wa_cfg.get("webhook_url", "")),
+                key=f"cfg_wa_ep_{curr_prof}",
                 help="Ex: https://sua-api.com/message/sendMedia/instancia ou https://api.z-api.io/instances/.../token/.../send-image"
             )
             
@@ -1064,11 +1177,13 @@ with tab_settings:
                 "API Key / Token de Acesso:",
                 value=wa_cfg.get("api_token", ""),
                 type="password",
+                key=f"cfg_wa_tok_{curr_prof}",
                 help="Sua chave secreta da API do WhatsApp"
             )
             wa_group_id = st.text_input(
                 "ID do Grupo de Destino ou Telefone:",
                 value=wa_cfg.get("target_group", ""),
+                key=f"cfg_wa_gid_{curr_prof}",
                 help="Ex: 1203630248293@g.us (ID do grupo) ou 5511999999999"
             )
             
@@ -1076,9 +1191,9 @@ with tab_settings:
         st.markdown("### 📸 Instagram (@mimozae.of)")
         col_net1, col_net2 = st.columns(2)
         with col_net1:
-            ig_handle = st.text_input("Usuário do Instagram:", value=config.get("instagram", {}).get("handle", "@mimozae.of"))
+            ig_handle = st.text_input("Usuário do Instagram:", value=config.get("instagram", {}).get("handle", "@mimozae.of"), key=f"cfg_ig_h_{curr_prof}")
         with col_net2:
-            ig_cta = st.text_input("Chamada (CTA) Padrão:", value=config.get("instagram", {}).get("default_cta", "Comente 'EU QUERO' para receber o link no direct!"))
+            ig_cta = st.text_input("Chamada (CTA) Padrão:", value=config.get("instagram", {}).get("default_cta", "Comente 'EU QUERO' para receber o link no direct!"), key=f"cfg_ig_c_{curr_prof}")
             
         submitted = st.form_submit_button(f"💾 Salvar Configurações no Perfil '{curr_prof}'", type="primary")
         
@@ -1110,7 +1225,44 @@ with tab_settings:
             }
             if save_profile(curr_prof, new_conf):
                 st.success(f"✅ Configurações salvas com sucesso no perfil de **{curr_prof}**!")
-                time.sleep(1)
+                time.sleep(0.5)
                 st.rerun()
             else:
                 st.error("Erro ao salvar configurações.")
+
+    st.markdown("---")
+    with st.expander("🔒 Blindar IDs de Afiliado no Streamlit Cloud (Para Nunca Sumir ao Atualizar ou Recarregar)", expanded=True):
+        st.caption(
+            "No Streamlit Community Cloud, o servidor reinicia o disco sempre que há atualização no GitHub. "
+            "Depois de salvar seus IDs acima, **copie o bloco TOML abaixo** (ícone no canto direito) e cole em **Manage app (canto inferior direito) > Settings > Secrets > Save** — "
+            "assim seus IDs ficam gravados de forma 100% permanente na nuvem!"
+        )
+        full_saved_now = load_full_config()
+        secrets_toml_str = generate_secrets_toml(full_saved_now)
+        st.code(secrets_toml_str, language="toml")
+
+        bk_col1, bk_col2 = st.columns(2)
+        with bk_col1:
+            import json as _json_bk
+            st.download_button(
+                "📤 Exportar Backup (.json)",
+                data=_json_bk.dumps(full_saved_now, indent=2, ensure_ascii=False),
+                file_name="mimozae_backup_afiliados.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+        with bk_col2:
+            up_bk = st.file_uploader("📥 Restaurar Backup (.json)", type=["json"], key="restore_cfg_json")
+            if up_bk is not None:
+                try:
+                    import json as _json_bk2
+                    restored = _json_bk2.load(up_bk)
+                    if isinstance(restored, dict) and "profiles" in restored:
+                        save_full_config(restored)
+                        st.success("✅ Backup restaurado! Recarregando...")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error("Arquivo .json inválido.")
+                except Exception as ex:
+                    st.error(f"Erro ao importar: {ex}")

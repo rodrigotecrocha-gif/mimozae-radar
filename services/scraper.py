@@ -1,9 +1,11 @@
 import hashlib
 import html as html_lib
 import json
+import math
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 import requests
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
@@ -19,6 +21,92 @@ def strip_accents(text: str) -> str:
         c for c in unicodedata.normalize("NFD", str(text))
         if unicodedata.category(c) != "Mn"
     ).lower()
+
+
+# Sinônimos PT/EN para tornar buscas na Shein e comparações de produtos muito mais efetivas
+_KEYWORD_SYNONYMS = {
+    "vestido": ("vestido", "dress", "macaquinho", "gown"),
+    "blusa": ("blusa", "camiseta", "camisa", "cropped", "regata", "t-shirt", "shirt", "top", "blouse"),
+    "camiseta": ("camiseta", "t-shirt", "shirt", "blusa", "tee", "polo"),
+    "calca": ("calca", "jeans", "cargo", "pants", "legging", "pantalona", "trousers"),
+    "conjunto": ("conjunto", "2 pcs", "2 pecas", "2pcs", "duas pecas", "pijama", "set", "kit"),
+    "bolsa": ("bolsa", "bag", "mochila", "necessaire", "carteira", "clutch"),
+    "tenis": ("tenis", "sneaker", "sapato", "sandalia", "bota", "chinelo", "rasteira", "shoes"),
+    "sapato": ("sapato", "tenis", "sandalia", "bota", "salto", "rasteira", "shoes"),
+    "maquiagem": ("maquiagem", "sheglam", "blush", "batom", "gloss", "sombra", "base", "rimel", "corretivo", "iluminador", "makeup"),
+    "skincare": ("skincare", "creme", "serum", "hidratante", "limpeza", "mascara", "sakura", "laikou", "clareador", "facial", "protetor"),
+    "hidratante": ("hidratante", "creme", "locao", "lotion", "skincare", "cerave", "nivea", "cicaplast"),
+    "perfume": ("perfume", "colonia", "deo", "eau de", "body splash", "fragrancia"),
+    "fone": ("fone", "headphone", "headset", "earbud", "airpods", "tws", "bluetooth"),
+    "smartwatch": ("smartwatch", "relogio inteligente", "watch", "mi band", "amazfit"),
+    "airfryer": ("airfryer", "air fryer", "fritadeira"),
+    "fritadeira": ("fritadeira", "airfryer", "air fryer"),
+    "processador": ("processador", "mini processador", "triturador"),
+    "garrafa": ("garrafa", "copo termico", "stanley", "squeeze"),
+    "bebe": ("bebe", "infantil", "baby", "kid", "toddler", "menino", "menina"),
+    "saia": ("saia", "skirt"),
+    "short": ("short", "shorts", "bermuda"),
+}
+
+
+def _expand_token_variants(tok: str) -> tuple:
+    base = tok.rstrip("s") if len(tok) > 4 else tok
+    syns = set([tok, base])
+    for k, vals in _KEYWORD_SYNONYMS.items():
+        if tok == k or base == k or tok in vals:
+            syns.update(vals)
+    return tuple(syns)
+
+
+def _keyword_match_score(norm_text: str, kw_norm: str, kw_tokens: list) -> float:
+    """Retorna score > 0 quando o produto corresponde ao termo pesquisado (0.0 se não corresponder)."""
+    if not kw_tokens:
+        return 1.0
+    if kw_norm in norm_text:
+        return 2.0 + len(kw_tokens)
+
+    hits = 0
+    for tok in kw_tokens:
+        variants = _expand_token_variants(tok)
+        if any(v in norm_text for v in variants):
+            hits += 1
+
+    if hits == len(kw_tokens):
+        return 1.0 + hits * 0.5
+    if len(kw_tokens) >= 2 and hits >= math.ceil(0.65 * len(kw_tokens)):
+        return 0.5 + (hits / len(kw_tokens))
+    return 0.0
+
+
+def build_store_comparison(deals: list, keyword: str) -> dict:
+    """Agrupa correspondências por loja cadastrada (Mercado Livre, Shopee, Shein) para comparação direta de preços."""
+    q = quote((keyword or "").strip())
+    search_links = {
+        "Mercado Livre": f"https://lista.mercadolivre.com.br/{quote((keyword or '').strip().replace(' ', '-'))}" if keyword else "https://www.mercadolivre.com.br/ofertas",
+        "Shopee": f"https://shopee.com.br/search?keyword={q}" if keyword else "https://shopee.com.br/flash_sale",
+        "Shein": f"https://br.shein.com/pdsearch/{q}/" if keyword else "https://br.shein.com/",
+    }
+    summary = {}
+    for store in ALLOWED_STORES:
+        store_deals = [d for d in deals if d.get("store") == store]
+        # Ordenar por relevância + menor preço válido para mostrar a melhor comparação
+        priced = [d for d in store_deals if (d.get("price") or 0) > 0]
+        priced_sorted = sorted(
+            priced,
+            key=lambda x: (-round(x.get("_kw_relevance", 1.0), 1), x.get("price", 999999.0)),
+        )
+        best_deal = priced_sorted[0] if priced_sorted else (store_deals[0] if store_deals else None)
+        lowest_price = min((d["price"] for d in priced), default=None)
+        max_disc = max((d.get("discount_pct") or 0 for d in store_deals), default=0)
+        summary[store] = {
+            "count": len(store_deals),
+            "lowest_price": lowest_price,
+            "max_discount": max_disc,
+            "best_deal": best_deal,
+            "deals": store_deals,
+            "store_search_url": search_links[store],
+        }
+    return summary
 
 
 # Catálogo Curado de Produtos Altamente Virais e Top Mais Vendidos (Shopee, ML, Shein, TikTok)
@@ -235,23 +323,26 @@ def get_session():
 
 
 def sanitize_img_url(img_url: str, source: str = "") -> str:
-    """Higieniza URLs de imagens para garantir protocolo absoluto https://."""
+    """Higieniza URLs de imagens para garantir protocolo absoluto https:// e evitar falha de .webp no ML."""
     if not img_url:
         return ""
     s = str(img_url).strip()
     if s.startswith("//"):
-        return f"https:{s}"
-    if s.startswith("http://") or s.startswith("https://"):
-        return s
+        s = f"https:{s}"
+    elif not (s.startswith("http://") or s.startswith("https://")):
+        clean_path = s.lstrip("/")
+        if s.startswith("/static/"):
+            s = f"https://www.promobit.com.br{s}"
+        elif "promobit" in source.lower() or re.match(r"^(?:\d+/)?\d+", clean_path):
+            s = f"https://i.promobit.com.br/{clean_path}"
+        elif s.startswith("/"):
+            s = f"https://i.promobit.com.br/{clean_path}"
+        else:
+            s = f"https://{clean_path}"
 
-    clean_path = s.lstrip("/")
-    if s.startswith("/static/"):
-        return f"https://www.promobit.com.br{s}"
-    if "promobit" in source.lower() or re.match(r"^(?:\d+/)?\d+", clean_path):
-        return f"https://i.promobit.com.br/{clean_path}"
-    if s.startswith("/"):
-        return f"https://i.promobit.com.br/{clean_path}"
-    return f"https://{clean_path}"
+    if "mlstatic.com" in s.lower() and ".webp" in s.lower():
+        s = re.sub(r"\.webp(\?.*)?$", ".jpg", s, flags=re.I)
+    return s
 
 
 def robust_parse_money(txt: str) -> float:
@@ -757,6 +848,21 @@ def fetch_pechinchou_catalog(page_num: int = 1) -> list:
     return []
 
 
+def fetch_pechinchou_catalog_search(query: str, page_num: int = 1) -> list:
+    """Busca produto específico por palavra-chave no catálogo da Pechinchou API."""
+    if not query:
+        return []
+    session = get_session()
+    url = f"http://admin2.pechinchou.com.br/api/v2/produto/?search={quote(query)}&page={page_num}"
+    try:
+        r = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        if r.status_code == 200:
+            return _parse_pechinchou_items(r.json().get("results", []))
+    except Exception:
+        pass
+    return []
+
+
 # ==============================================================================
 # 4. PELANDO ASTRO JSON (SHOPEE, SHEIN, NICHOS POR TEMPERATURA)
 # ==============================================================================
@@ -1125,23 +1231,30 @@ def search_deals(
                 for skw in niche_cfg.get("shopee_kws", [""]):
                     tasks.append(executor.submit(fetch_shopee_open_api, shp_id, shp_secret, skw, 2, 50))
 
-        # 1. Busca específica por Palavra-Chave digitada pelo usuário (Somente ML, Shopee e Shein)
+        # 1. Busca específica por Palavra-Chave digitada pelo usuário (Comparação ML x Shopee x Shein)
         if kw_clean:
             tasks.append(executor.submit(fetch_promobit_search_api, kw_clean))
-            tasks.append(executor.submit(fetch_pelando_feed, f"/busca/{kw_clean.replace(' ', '%20')}"))
+            tasks.append(executor.submit(fetch_pelando_feed, f"/busca/{quote(kw_clean)}"))
+            for p in range(1, 3):
+                tasks.append(executor.submit(fetch_pechinchou_catalog_search, kw_clean, p))
+                tasks.append(executor.submit(fetch_pechinchou_page, p))
             if not stores or any("mercado" in s.lower() for s in stores):
                 tasks.append(executor.submit(fetch_mercadolivre_mais_vendidos, "Todos os Nichos"))
                 for ml_cat in niche_cfg.get("ml_cats", [])[:2]:
                     tasks.append(executor.submit(fetch_mercadolivre_category, ml_cat))
-                tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 2))
+                tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 4))
             if not stores or any("shopee" in s.lower() for s in stores):
-                tasks.append(executor.submit(fetch_promobit_store_api, "shopee", 3))
+                tasks.append(executor.submit(fetch_promobit_store_api, "shopee", 6))
                 tasks.append(executor.submit(fetch_promobit_search_api, f"shopee {kw_clean}"))
             if not stores or any("shein" in s.lower() for s in stores):
-                tasks.append(executor.submit(fetch_promobit_store_api, "shein", 2))
-                tasks.append(executor.submit(fetch_promobit_search_api, f"shein {kw_clean}"))
-            for p in range(1, 3):
-                tasks.append(executor.submit(fetch_pechinchou_page, p))
+                tasks.append(executor.submit(fetch_promobit_store_api, "shein", 6))
+                tasks.append(executor.submit(fetch_pelando_feed, "/c/para-elas"))
+                # Se houver sinônimo inglês (ex: dress/sheglam), buscar também no Promobit para enriquecer Shein
+                first_tok = strip_accents(kw_clean).split()[0] if kw_clean.split() else ""
+                for syn in _expand_token_variants(first_tok):
+                    if syn != first_tok and len(syn) > 3:
+                        tasks.append(executor.submit(fetch_promobit_search_api, syn))
+                        break
 
         # 2. Busca por Lojas Específicas (Somente ML, Shopee e Shein)
         elif stores:
@@ -1169,21 +1282,24 @@ def search_deals(
                     for p in range(1, 5):
                         tasks.append(executor.submit(fetch_pechinchou_catalog, p))
                 elif "shein" in sl:
-                    tasks.append(executor.submit(fetch_promobit_store_api, "shein", 4))
+                    tasks.append(executor.submit(fetch_promobit_store_api, "shein", 6))
                     tasks.append(executor.submit(fetch_promobit_search_api, "shein"))
                     tasks.append(executor.submit(fetch_pelando_feed, "/busca/shein"))
                     tasks.append(executor.submit(fetch_pelando_feed, "/busca/shein?page=2"))
+                    tasks.append(executor.submit(fetch_pelando_feed, "/c/para-elas"))
+                    tasks.append(executor.submit(fetch_pelando_feed, "/mais-quentes"))
                     if effective_niche != "Todos os Nichos":
-                        shein_tokens = [tok for skw in niche_cfg.get("shopee_kws", []) for tok in skw.split()][:3]
+                        shein_tokens = [tok for skw in niche_cfg.get("shopee_kws", []) for tok in skw.split()][:4]
                         for tok in shein_tokens:
-                            tasks.append(executor.submit(fetch_promobit_search_api, f"shein {tok}"))
+                            tasks.append(executor.submit(fetch_promobit_search_api, tok))
+                            tasks.append(executor.submit(fetch_pelando_feed, f"/busca/{quote(tok)}"))
 
         # 3. Modo Viral ou "Todas as Lojas" (100% focado em Mercado Livre, Shopee e Shein)
         else:
-            shopee_pages = 3 if effective_niche == "Todos os Nichos" else 4
+            shopee_pages = 4 if effective_niche == "Todos os Nichos" else 5
             tasks.append(executor.submit(fetch_promobit_store_api, "shopee", shopee_pages))
-            tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 2))
-            tasks.append(executor.submit(fetch_promobit_store_api, "shein", 2))
+            tasks.append(executor.submit(fetch_promobit_store_api, "mercado-livre", 3))
+            tasks.append(executor.submit(fetch_promobit_store_api, "shein", 4))
             tasks.append(executor.submit(fetch_mercadolivre_mais_vendidos, effective_niche))
             tasks.append(executor.submit(fetch_pelando_feed, "/busca/shopee"))
             tasks.append(executor.submit(fetch_pelando_feed, "/busca/shein"))
@@ -1193,7 +1309,7 @@ def search_deals(
                 for skw in niche_cfg.get("shopee_kws", [])[:1]:
                     tok = skw.split()[0]
                     tasks.append(executor.submit(fetch_promobit_search_api, f"shopee {tok}"))
-                    tasks.append(executor.submit(fetch_promobit_search_api, f"shein {tok}"))
+                    tasks.append(executor.submit(fetch_promobit_search_api, tok))
             for pel_cat in niche_cfg.get("pelando_cats", ["recentes"])[:2]:
                 tasks.append(executor.submit(fetch_pelando_feed, f"/c/{pel_cat}" if pel_cat != "recentes" else "/recentes"))
             for p in range(1, 3):
@@ -1210,9 +1326,17 @@ def search_deals(
                 pass
 
     filtered = []
-    seen_titles = set()
+    seen_store_titles = set()
     kw_norm = strip_accents(kw_clean)
     kw_tokens = [tok.rstrip("s") if len(tok) > 4 else tok for tok in kw_norm.split()]
+
+    # Expande sinônimos nas keywords do nicho para buscas Shein e bilíngues
+    expanded_niche_kws = []
+    if niche_keywords:
+        s_kws = set(niche_keywords)
+        for nk in niche_keywords:
+            s_kws.update(_expand_token_variants(nk))
+        expanded_niche_kws = list(s_kws)
 
     for d in raw_deals:
         # 0. Restringir estritamente às 3 lojas autorizadas: Mercado Livre, Shopee e Shein
@@ -1222,8 +1346,8 @@ def search_deals(
             continue
 
         norm_title = strip_accents(d["title"])
-        dedup_key = re.sub(r"[^a-z0-9]", "", norm_title[:30])
-        if not dedup_key or dedup_key in seen_titles:
+        dedup_key = f"{d.get('store')}:{re.sub(r'[^a-z0-9]', '', norm_title[:32])}"
+        if dedup_key.endswith(":") or dedup_key in seen_store_titles:
             continue
 
         # 1. Filtro por Loja (quando selecionada)
@@ -1232,18 +1356,22 @@ def search_deals(
             if not store_match:
                 continue
 
-        # 2. Filtro por Palavra-Chave digitada (flexível a plural)
+        # 2. Filtro por Palavra-Chave digitada (com correspondência flexível e sinônimos PT/EN)
         if kw_tokens:
-            text_to_check = f"{norm_title} {strip_accents(d.get('category', ''))} {strip_accents(d.get('store', ''))}"
-            if not all(tok in text_to_check for tok in kw_tokens):
+            text_to_check = f"{norm_title} {strip_accents(d.get('category', ''))}"
+            rel = _keyword_match_score(text_to_check, kw_norm, kw_tokens)
+            if rel <= 0:
                 continue
+            d["_kw_relevance"] = rel
+        else:
+            d["_kw_relevance"] = 0.0
 
-        # 3. Filtro por Nicho (usa tanto categoria real da loja quanto palavras-chave do título)
-        if niche_keywords and not kw_norm:
+        # 3. Filtro por Nicho (usa categoria da loja + palavras-chave expandidas PT/EN)
+        if expanded_niche_kws and not kw_norm:
             cat_norm = strip_accents(d.get("category", ""))
             niche_match = (
                 cat_norm == strip_accents(effective_niche)
-                or any(k in norm_title for k in niche_keywords)
+                or any(k in norm_title for k in expanded_niche_kws)
                 or any(slug.replace("-", " ") in cat_norm for slug in niche_cfg.get("pb_cats", []) + niche_cfg.get("ml_cats", []))
             )
             if not niche_match:
@@ -1263,18 +1391,26 @@ def search_deals(
         if p > 0 and (p < price_min or p > price_max):
             continue
 
-        seen_titles.add(dedup_key)
+        seen_store_titles.add(dedup_key)
         filtered.append(d)
 
-    # Ordenação inteligente pelos critérios selecionados
-    if sort_by == "discount":
-        filtered.sort(key=lambda x: (x.get("discount_pct", 0), x.get("quality_score", 0)), reverse=True)
-    elif sort_by == "sales":
-        filtered.sort(key=lambda x: (1 if x.get("is_bestseller") else 0, x.get("rating", 0.0), x.get("sales_count", 0), x.get("discount_pct", 0)), reverse=True)
-    elif sort_by == "price_asc":
-        filtered.sort(key=lambda x: x.get("price", 999999.0))
+    # Ordenação inteligente: se houver palavra-chave digitada, prioriza relevância + critério escolhido
+    if kw_tokens:
+        if sort_by == "price_asc":
+            filtered.sort(key=lambda x: (-round(x.get("_kw_relevance", 0.0), 1), x.get("price", 999999.0)))
+        elif sort_by == "discount":
+            filtered.sort(key=lambda x: (round(x.get("_kw_relevance", 0.0), 1), x.get("discount_pct", 0), x.get("quality_score", 0)), reverse=True)
+        else:
+            filtered.sort(key=lambda x: (round(x.get("_kw_relevance", 0.0), 1), x.get("quality_score", 0), x.get("discount_pct", 0)), reverse=True)
     else:
-        filtered.sort(key=lambda x: (x.get("quality_score", 0), x.get("discount_pct", 0)), reverse=True)
+        if sort_by == "discount":
+            filtered.sort(key=lambda x: (x.get("discount_pct", 0), x.get("quality_score", 0)), reverse=True)
+        elif sort_by == "sales":
+            filtered.sort(key=lambda x: (1 if x.get("is_bestseller") else 0, x.get("rating", 0.0), x.get("sales_count", 0), x.get("discount_pct", 0)), reverse=True)
+        elif sort_by == "price_asc":
+            filtered.sort(key=lambda x: x.get("price", 999999.0))
+        else:
+            filtered.sort(key=lambda x: (x.get("quality_score", 0), x.get("discount_pct", 0)), reverse=True)
 
     return filtered
 
